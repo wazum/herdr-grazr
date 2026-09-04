@@ -78,9 +78,24 @@ REMAINING_WEEKLY=20      # weekly windows get more margin, because losing one co
 ACCOUNTS="work personal" # preference order, first with headroom wins
 ENABLED=1
 DRY_RUN=0                # 1 = log the decision, do not swap
+LIVE_USAGE_BELOW=50      # below this much headroom, ask instead of guessing
 ```
 
 Start with `DRY_RUN=1` for a day. Decisions show up in `herdr plugin log`.
+
+### Why `LIVE_USAGE_BELOW` exists
+
+Claude writes what it knows about your limits into `~/.claude.json`, and
+*grazr* reads it there. That copy can sit unrefreshed for over an hour, which
+is long enough for a window to go from half full to spent without *grazr* ever
+seeing a number in between. Waiting for it means rotating late, and rotating
+late is the one failure that costs you the session.
+
+So once headroom drops below `LIVE_USAGE_BELOW`, *grazr* asks the same endpoint
+Claude asks, using the credential it already keeps, and never more than once
+every five minutes however many panes go idle together. Above that mark it does
+not reach for the network at all. Set it to `0` to turn the call off and leave
+*grazr* with whatever Claude last wrote down.
 
 ### Turn Herdr's toasts on
 
