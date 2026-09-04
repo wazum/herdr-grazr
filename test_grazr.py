@@ -695,6 +695,18 @@ class RotateTest(unittest.TestCase):
         ):
             claude.rotate(self.paths, "uuid-work", "uuid-personal", snapshot)
 
+    def test_it_swaps_the_keychain_item_that_belongs_to_this_config_dir(self):
+        self.paths = self.paths._replace(service="Claude Code-credentials-deadbeef")
+        self.keychain["Claude Code-credentials-deadbeef"] = "LIVE-WORK"
+
+        self.run_rotate()
+
+        self.assertEqual(
+            [service for _, service, _ in self.events],
+            ["grazr-uuid-work", "Claude Code-credentials-deadbeef"],
+        )
+        self.assertEqual(self.keychain["Claude Code-credentials"], "LIVE-WORK")
+
     def test_it_parks_the_live_blob_before_installing_the_next(self):
         self.run_rotate()
 
@@ -945,6 +957,14 @@ class EnrolTest(unittest.TestCase):
 
         self.assertEqual(self.installed, [], "nothing parked for a refused enrolment")
 
+    def test_saving_the_live_login_uses_this_config_dir_s_keychain_item(self):
+        self.paths = self.paths._replace(service="Claude Code-credentials-deadbeef")
+        self.keychain = {"Claude Code-credentials-deadbeef": "LIVE-ISOLATED"}
+
+        self.run_enrol(name="work")
+
+        self.assertEqual(self.installed, [("grazr-" + self.WORK, "LIVE-ISOLATED")])
+
     def test_an_account_id_that_is_not_a_uuid_is_refused(self):
         """The id comes from the server and becomes a filename, so it must not
         be able to point anywhere but the account store."""
@@ -1137,6 +1157,25 @@ class PathResolutionTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.directory, True)
+
+    def test_an_isolated_config_dir_gets_its_own_keychain_item(self):
+        """Writing the identity to an isolated config while swapping the
+        default keychain item would break both logins at once."""
+        isolated = os.path.join(self.directory, "isolated")
+        with mock.patch.dict(
+            os.environ, {"CLAUDE_CONFIG_DIR": isolated, "HERDR_PLUGIN_STATE_DIR": self.directory}
+        ):
+            paths, _ = grazr._paths()
+
+        self.assertEqual(paths.service, claude.service_name(isolated))
+        self.assertNotEqual(paths.service, claude.SERVICE)
+
+    def test_the_ordinary_login_uses_the_unnamespaced_keychain_item(self):
+        with mock.patch.dict(os.environ, {"HERDR_PLUGIN_STATE_DIR": self.directory}):
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            paths, _ = grazr._paths()
+
+        self.assertEqual(paths.service, claude.SERVICE)
 
     def test_an_isolated_config_dir_keeps_its_own_claude_json(self):
         """`CLAUDE_CONFIG_DIR=x claude` writes x/.claude.json, not ~/.claude.json."""

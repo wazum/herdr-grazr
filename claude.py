@@ -159,7 +159,13 @@ def _parse_time(value):
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-Paths = namedtuple("Paths", "config_path config_dir accounts_dir keychain_account")
+# Claude keeps one keychain item per config directory, so an isolated
+# CLAUDE_CONFIG_DIR has its own.
+Paths = namedtuple(
+    "Paths",
+    "config_path config_dir accounts_dir keychain_account service",
+    defaults=(SERVICE,),
+)
 
 
 def inspect(paths, now):
@@ -239,7 +245,7 @@ def enrol(paths, name, source_config_dir=None):
     Claude's own `claude auth login`; grazr never sees a password. `source_config_dir`
     is an isolated CLAUDE_CONFIG_DIR, so enrolling a second account never
     disturbs the live one."""
-    service = service_name(source_config_dir)
+    service = service_name(source_config_dir) if source_config_dir else paths.service
     config_path = (
         os.path.join(source_config_dir, ".claude.json")
         if source_config_dir
@@ -323,7 +329,7 @@ def rotate(paths, active_id, next_id, snapshot):
             renew_config()
             renew_oauth()
 
-        leaving = _read_credential(SERVICE, paths.keychain_account)
+        leaving = _read_credential(paths.service, paths.keychain_account)
         if leaving is None:
             raise RuntimeError("no live credential to park; refusing to swap")
         renew()
@@ -333,7 +339,7 @@ def rotate(paths, active_id, next_id, snapshot):
         if leaving != arriving:
             _install_credential(_parked_service(active_id), paths.keychain_account, leaving)
             renew()
-            _install_credential(SERVICE, paths.keychain_account, arriving)
+            _install_credential(paths.service, paths.keychain_account, arriving)
             renew()
         _merge_oauth_account(paths.config_path, identity)
 

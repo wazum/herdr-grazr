@@ -245,6 +245,7 @@ def _paths():
             config_dir=config_dir,
             accounts_dir=accounts_dir,
             keychain_account=getpass.getuser(),
+            service=claude.service_name(isolated) if isolated else claude.SERVICE,
         ),
         state_dir,
     )
