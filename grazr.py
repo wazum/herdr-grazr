@@ -462,17 +462,17 @@ def swap():
     now = datetime.now(timezone.utc)
     with _rotation_lock(state_dir) as acquired:
         if not acquired:
-            print("grazr: busy rotating already, try again in a moment")
-            return 1
+            return _refuse_swap("busy rotating already, try again in a moment")
         active, limits = claude.inspect(paths, now)
         if active is None:
-            print("grazr: not logged in, nothing to swap from")
-            return 1
+            return _refuse_swap("not logged in, nothing to swap from")
         accounts = claude.load_accounts(paths, config.accounts)
         next_id = core.next_account(active, accounts, now, config.thresholds)
         if next_id is None:
-            print("grazr: nothing to swap to; every other account is spent or not enrolled")
-            return 1
+            soonest = _soonest_reset(now, *(entry.snapshot for entry in accounts))
+            return _refuse_swap(
+                "nothing to swap to, earliest reset %s" % (soonest or "unknown")
+            )
         print(
             act_on(
                 ("rotate", next_id), paths, store, state_dir, active, limits,
@@ -480,6 +480,14 @@ def swap():
             )
         )
     return 0
+
+
+def _refuse_swap(reason):
+    """The user pressed a key and is watching, so a refusal goes to the screen
+    as well as the log."""
+    print("grazr: %s" % reason)
+    notify("grazr: no swap", reason)
+    return 1
 
 
 def status():

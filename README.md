@@ -146,8 +146,8 @@ in `ACCOUNTS` with headroom, which is the choice the automatic path would make,
 and announces it in the usual toast. It does not ask whether the account you
 are leaving still has room. You asked for the move, so it moves. `DRY_RUN=1`
 applies here too. `ENABLED=0` does not, since that flag only quiets the
-automatic path. If every other account is spent, the key does nothing and says
-so in `herdr plugin log`.
+automatic path. If every other account is spent, the key swaps nothing and says
+so in a toast, with the earliest reset time, and in `herdr plugin log`.
 
 ## After a swap
 

@@ -2006,6 +2006,7 @@ class EnrolledPairFixture(unittest.TestCase):
                 json.dump({"name": name, "oauthAccount": {"accountUuid": identifier}}, f)
         self.write_config('ACCOUNTS="work personal"\n')
         self.rotations = []
+        self.notices = []
 
     def write_config(self, text):
         with open(os.path.join(self.state_dir, "config.env"), "w") as handle:
@@ -2041,9 +2042,9 @@ class EnrolledPairFixture(unittest.TestCase):
         printed = io.StringIO()
         with mock.patch.dict(os.environ, environment), mock.patch.object(
             claude, "rotate", lambda *arguments: self.rotations.append(arguments)
-        ), mock.patch.object(grazr, "notify", lambda title, body: True), contextlib.redirect_stdout(
-            printed
-        ):
+        ), mock.patch.object(
+            grazr, "notify", lambda title, body: self.notices.append((title, body)) or True
+        ), contextlib.redirect_stdout(printed):
             return entry(), printed.getvalue()
 
 
@@ -2209,6 +2210,8 @@ class SwapTest(EnrolledPairFixture):
         self.assertEqual(len(self.rotations), 1)
 
     def test_nowhere_to_go_is_reported_not_swapped(self):
+        """The user pressed a key and is looking at the screen, so a refusal
+        that only reaches the plugin log looks like a key that does nothing."""
         self.write_config('ACCOUNTS="work"\n')
 
         code, printed = self.invoke(grazr.swap)
@@ -2216,6 +2219,27 @@ class SwapTest(EnrolledPairFixture):
         self.assertEqual(code, 1)
         self.assertEqual(self.rotations, [])
         self.assertIn("nothing to swap to", printed)
+        self.assertEqual(len(self.notices), 1)
+        self.assertIn("nothing to swap to", self.notices[0][1])
+
+    def test_nowhere_to_go_names_the_earliest_reset(self):
+        spent_until = (datetime.now(timezone.utc) + timedelta(hours=2)).replace(microsecond=0)
+        with open(os.path.join(self.state_dir, "accounts", "uuid-personal.json"), "w") as f:
+            json.dump(
+                {
+                    "name": "personal",
+                    "oauthAccount": {"accountUuid": "uuid-personal"},
+                    "snapshot": [
+                        {"kind": "session", "scope": None, "group": "session",
+                         "remaining": 3, "resets_at": spent_until.isoformat()}
+                    ],
+                },
+                f,
+            )
+
+        _, printed = self.invoke(grazr.swap)
+
+        self.assertIn(spent_until.isoformat(), printed)
 
     def test_a_pane_holding_the_rotation_lock_makes_it_wait_its_turn(self):
         held = open(os.path.join(self.state_dir, "rotate.lock"), "w")
