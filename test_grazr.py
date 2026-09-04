@@ -857,6 +857,11 @@ class InspectTest(unittest.TestCase):
 
 
 class EnrolTest(unittest.TestCase):
+    # Real uuids, because enrolment validates the shape Claude actually sends.
+    WORK = "11111111-1111-4111-8111-111111111111"
+    PERSONAL = "22222222-2222-4222-8222-222222222222"
+    OTHER = "33333333-3333-4333-8333-333333333333"
+
     def setUp(self):
         self.directory = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.directory, True)
@@ -865,7 +870,7 @@ class EnrolTest(unittest.TestCase):
         self.config_path = os.path.join(self.directory, ".claude.json")
         with open(self.config_path, "w") as handle:
             json.dump(
-                {"oauthAccount": {"accountUuid": "uuid-work", "emailAddress": "a@b.c"}}, handle
+                {"oauthAccount": {"accountUuid": self.WORK, "emailAddress": "a@b.c"}}, handle
             )
         self.paths = claude.Paths(
             config_path=self.config_path,
@@ -889,28 +894,52 @@ class EnrolTest(unittest.TestCase):
     def test_it_parks_the_live_credential_under_the_account_uuid(self):
         identifier = self.run_enrol()
 
-        self.assertEqual(identifier, "uuid-work")
-        self.assertEqual(self.installed, [("grazr-uuid-work", "LIVE-WORK")])
+        self.assertEqual(identifier, self.WORK)
+        self.assertEqual(self.installed, [("grazr-" + self.WORK, "LIVE-WORK")])
 
     def test_it_records_the_identity_needed_to_rotate_back(self):
         self.run_enrol(name="work")
 
-        with open(os.path.join(self.accounts_dir, "uuid-work.json")) as handle:
+        with open(os.path.join(self.accounts_dir, self.WORK + ".json")) as handle:
             stored = json.load(handle)
         self.assertEqual(stored["name"], "work")
-        self.assertEqual(stored["oauthAccount"]["accountUuid"], "uuid-work")
+        self.assertEqual(stored["oauthAccount"]["accountUuid"], self.WORK)
         self.assertIsNone(stored["snapshot"])
 
     def test_reusing_a_name_is_refused_rather_than_hiding_an_account(self):
         """Accounts are looked up by display name, so a duplicate would make one
         of them permanently unreachable."""
-        with open(os.path.join(self.accounts_dir, "uuid-other.json"), "w") as handle:
-            json.dump({"name": "work", "oauthAccount": {"accountUuid": "uuid-other"}}, handle)
+        with open(os.path.join(self.accounts_dir, self.OTHER + ".json"), "w") as handle:
+            json.dump({"name": "work", "oauthAccount": {"accountUuid": self.OTHER}}, handle)
 
         with self.assertRaises(RuntimeError):
             self.run_enrol(name="work")
 
         self.assertEqual(self.installed, [], "nothing parked for a refused enrolment")
+
+    def test_an_account_id_that_is_not_a_uuid_is_refused(self):
+        """The id comes from the server and becomes a filename, so it must not
+        be able to point anywhere but the account store."""
+        for bogus in ("../../evil", "a/b", "..", "", "  "):
+            with self.subTest(bogus=bogus):
+                with open(self.config_path, "w") as handle:
+                    json.dump({"oauthAccount": {"accountUuid": bogus}}, handle)
+                with self.assertRaises(RuntimeError):
+                    self.run_enrol()
+        self.assertEqual(self.installed, [])
+
+    def test_a_failed_keychain_delete_is_reported(self):
+        """A stranded credential nobody tracks is exactly what this cleans up."""
+        isolated = os.path.join(self.directory, "enrol-tmp")
+        os.mkdir(isolated)
+
+        removed = claude.discard_isolated_login(
+            self.paths,
+            isolated,
+            spawn=lambda argv, **kw: SimpleNamespace(returncode=1, stdout="", stderr="denied"),
+        )
+
+        self.assertFalse(removed)
 
     def test_a_login_with_no_identity_yet_is_refused(self):
         """Without an accountUuid the credential would be parked under
@@ -973,13 +1002,13 @@ class EnrolTest(unittest.TestCase):
         isolated = os.path.join(self.directory, "enrol-tmp")
         os.mkdir(isolated)
         with open(os.path.join(isolated, ".claude.json"), "w") as handle:
-            json.dump({"oauthAccount": {"accountUuid": "uuid-personal"}}, handle)
+            json.dump({"oauthAccount": {"accountUuid": self.PERSONAL}}, handle)
         self.keychain[claude.service_name(isolated)] = "LIVE-PERSONAL"
 
         identifier = self.run_enrol(name="personal", source=isolated)
 
-        self.assertEqual(identifier, "uuid-personal")
-        self.assertEqual(self.installed, [("grazr-uuid-personal", "LIVE-PERSONAL")])
+        self.assertEqual(identifier, self.PERSONAL)
+        self.assertEqual(self.installed, [("grazr-" + self.PERSONAL, "LIVE-PERSONAL")])
 
 
 class ConfigTest(unittest.TestCase):

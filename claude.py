@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 import unicodedata
+import uuid
 from collections import namedtuple
 from datetime import datetime, timezone
 
@@ -236,9 +237,7 @@ def enrol(paths, name, source_config_dir=None):
 
     with open(config_path) as handle:
         identity = (json.load(handle).get("oauthAccount") or {})
-    account_id = identity.get("accountUuid")
-    if not account_id:
-        raise RuntimeError("that login has no account identity yet; finish logging in first")
+    account_id = _account_id(identity.get("accountUuid"))
 
     # Accounts are looked up by display name, so a duplicate would leave one of
     # them permanently unreachable.
@@ -271,7 +270,7 @@ def discard_isolated_login(paths, config_dir, spawn=subprocess.run):
     """
     removed = True
     try:
-        spawn(
+        completed = spawn(
             [
                 "security",
                 "delete-generic-password",
@@ -281,8 +280,10 @@ def discard_isolated_login(paths, config_dir, spawn=subprocess.run):
                 paths.keychain_account,
             ],
             capture_output=True,
+            timeout=SECURITY_TIMEOUT_SECONDS,
         )
-    except OSError:
+        removed = getattr(completed, "returncode", 0) == 0
+    except (OSError, subprocess.TimeoutExpired):
         removed = False
     shutil.rmtree(config_dir, ignore_errors=True)
     return removed
@@ -312,6 +313,17 @@ def rotate(paths, active_id, next_id, snapshot):
 
     _write_oauth_account(paths.config_path, identity)
     _record_snapshot(paths, active_id, snapshot)
+
+
+def _account_id(value):
+    """The server's account id becomes a filename and a keychain service, so it
+    has to be a plain uuid and nothing else."""
+    try:
+        if str(uuid.UUID(str(value))) == value:
+            return value
+    except (AttributeError, TypeError, ValueError):
+        pass
+    raise RuntimeError("that login has no usable account identity: %r" % (value,))
 
 
 def _parked_service(account_id):
