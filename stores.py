@@ -113,6 +113,13 @@ def service_name(config_dir=None):
     return "%s-%s" % (SERVICE, hashlib.sha256(normalized.encode()).hexdigest()[:8])
 
 
+def _scrubbed(stderr):
+    """security echoes the tail of the blob in its error and the message
+    reaches the plugin log. Scrub before trimming, or the cut can leave a hex
+    fragment too short to match."""
+    return re.sub(r"[0-9a-f]{8,}", "<hex>", stderr.strip())[:200]
+
+
 class KeychainStore:
     def __init__(self, service, keychain_account, spawn=subprocess.run):
         self.service = service
@@ -169,8 +176,13 @@ class KeychainStore:
             )
         except subprocess.TimeoutExpired:
             raise RuntimeError("the keychain did not answer within %ds" % SECURITY_TIMEOUT_SECONDS)
-        if completed.returncode != 0:
+        if completed.returncode == ITEM_NOT_FOUND:
             return None
+        if completed.returncode != 0:
+            raise RuntimeError(
+                "the keychain refused to read the credential: %s"
+                % (_scrubbed(completed.stderr) or completed.returncode)
+            )
         stored = completed.stdout.strip()
         try:
             return bytes.fromhex(stored).decode()
@@ -207,9 +219,7 @@ class KeychainStore:
         except subprocess.TimeoutExpired:
             raise RuntimeError("the keychain did not answer within %ds" % SECURITY_TIMEOUT_SECONDS)
         if completed.returncode != 0:
-            # security echoes the tail of the blob in its error and the message
-            # reaches the plugin log. Scrub before trimming, or the cut can
-            # leave a hex fragment too short to match.
-            scrubbed = re.sub(r"[0-9a-f]{8,}", "<hex>", completed.stderr.strip())[:200]
-            raise RuntimeError("security refused the command: %s" % scrubbed)
+            raise RuntimeError(
+                "security refused the command: %s" % _scrubbed(completed.stderr)
+            )
         return completed.stdout

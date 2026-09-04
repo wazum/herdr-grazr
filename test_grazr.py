@@ -353,6 +353,21 @@ class KeychainStoreTest(unittest.TestCase):
         self.assertEqual(store.read_parked("uuid-work"), "BLOB-WORK")
         self.assertIsNone(store.read_parked("uuid-personal"))
 
+    def test_a_keychain_that_refuses_is_an_error_not_an_absent_item(self):
+        """A locked keychain, or one asked from a session with no UI, exits
+        non-zero without saying "not found". Reading that as "never parked"
+        sends the user off to enrol an account that is already enrolled."""
+
+        def fake_subprocess(argv, capture_output, text, **kwargs):
+            return SimpleNamespace(
+                returncode=51, stdout="", stderr="security: interaction not allowed"
+            )
+
+        with self.assertRaises(RuntimeError) as raised:
+            self.store(fake_subprocess).read_parked("uuid-work")
+
+        self.assertIn("interaction not allowed", str(raised.exception))
+
     def test_read_isolated_asks_for_the_directory_s_own_item(self):
         directory = "/tmp/grazr-enrol-personal"
         suffix = hashlib.sha256(directory.encode()).hexdigest()[:8]
