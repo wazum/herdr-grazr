@@ -1,0 +1,24 @@
+id = "wazum.grazr"
+name = "Grazr"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "Rotate to a fresh Claude account before the current one runs out"
+platforms = ["macos"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["python3", "grazr.py", "hook"]
+
+[[panes]]
+id = "enrol"
+title = "Grazr: enrol a Claude account"
+description = "Save the current login, or log in to another account without touching it"
+placement = "popup"
+command = ["python3", "grazr.py", "enrol"]
+
+[[panes]]
+id = "status"
+title = "Grazr: accounts and headroom"
+description = "Active account, what each enrolled account has left, and the config path"
+placement = "popup"
+command = ["python3", "grazr.py", "status"]

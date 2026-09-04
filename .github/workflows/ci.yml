@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    # macOS is the supported platform; Linux runs the same suite because it is
+    # hermetic (no keychain, no network, no `claude`), so a Linux failure means
+    # a real portability bug rather than a missing dependency.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+        # 3.9 is the documented floor and catches syntax the README forbids
+        # (no `X | None`); the newest release catches deprecations early.
+        python: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Tests
+        run: python3 test_grazr.py
+
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Manifest parses and declares what Herdr needs
+        run: |
+          python3 - <<'PY'
+          import tomllib
+
+          with open("herdr-plugin.toml", "rb") as handle:
+              manifest = tomllib.load(handle)
+
+          for key in ("id", "name", "version", "description", "platforms"):
+              assert manifest.get(key), "herdr-plugin.toml is missing %s" % key
+
+          assert manifest["platforms"] == ["macos"], manifest["platforms"]
+          assert [event["on"] for event in manifest["events"]] == [
+              "pane.agent_status_changed"
+          ]
+          assert sorted(pane["id"] for pane in manifest["panes"]) == ["enrol", "status"]
+
+          # Every command must name a file that is actually in the repo.
+          import os
+
+          for entry in manifest["events"] + manifest["panes"]:
+              script = entry["command"][1]
+              assert os.path.exists(script), "%s runs %s, which is absent" % (
+                  entry.get("id", entry.get("on")),
+                  script,
+              )
+
+          print("manifest ok:", manifest["id"], manifest["version"])
+          PY
+
+  purity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: The decision core stays pure and dependency-free
+        run: |
+          python3 - <<'PY'
+          import ast
+          import pathlib
+
+          core = pathlib.Path("core.py").read_text()
+          assert "claude" not in core.lower(), "core.py names an agent"
+
+          imported = {
+              node.module or ""
+              for node in ast.walk(ast.parse(core))
+              if isinstance(node, ast.ImportFrom)
+          } | {
+              alias.name
+              for node in ast.walk(ast.parse(core))
+              if isinstance(node, ast.Import)
+              for alias in node.names
+          }
+          assert imported <= {"collections"}, "core.py imports %s" % sorted(imported)
+
+          # No third-party dependencies anywhere: the plugin is stdlib only.
+          for path in pathlib.Path(".").glob("*.py"):
+              tree = ast.parse(path.read_text())
+              for node in ast.walk(tree):
+                  names = []
+                  if isinstance(node, ast.Import):
+                      names = [alias.name.split(".")[0] for alias in node.names]
+                  elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                      names = [(node.module or "").split(".")[0]]
+                  for name in names:
+                      assert (
+                          name in ("core", "claude", "grazr")
+                          or name in __import__("sys").stdlib_module_names
+                      ), "%s imports non-stdlib %s" % (path, name)
+
+          print("core.py is pure; every import is stdlib")
+          PY

@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+
+# grazr's own runtime state, if anyone points it at the repo. Account metadata
+# and enrolment scratch dirs never belong in version control.
+accounts/
+enrol-*/
+config.env
+last_notice
+rotate.lock
+
+.DS_Store
