@@ -321,7 +321,7 @@ def main(argv):
 
 
 def status():
-    paths, _ = _paths()
+    paths, state_dir = _paths()
     config = load_config(_config_path())
     now = datetime.now(timezone.utc)
     active, limits = claude.inspect(paths, now)
@@ -332,17 +332,40 @@ def status():
           % (config.thresholds["session"], config.thresholds["weekly"],
              "   DRY_RUN" if config.dry_run else ""))
 
-    for account in claude.load_accounts(paths, config.accounts):
+    accounts = claude.load_accounts(paths, config.accounts)
+    for account in accounts:
         marker = "*" if account.id == active else " "
-        print("%s %-16s %s" % (marker, account.name, _describe(account.snapshot)))
+        parked = "parked" if claude.has_parked_credential(paths, account.id) else "NO CREDENTIAL"
+        print("%s %-16s %-14s %s" % (marker, account.name, parked, _describe(account.snapshot)))
+
+    for name in config.accounts:
+        if not any(account.name == name for account in accounts):
+            print("  %-16s not enrolled, so it is never used" % name)
 
     print("\nactive account headroom: %s" % _describe(limits))
+    if limits == "unknown":
+        print("  (usage describes another account or is over an hour old)")
+    if active and not any(account.id == active for account in accounts):
+        print("  this login is not enrolled; grazr can rotate away but not back")
+
+    last = _last_decision(state_dir)
+    if last:
+        print("\nlast reported: %s" % last)
     print("\n(* = active)   press return to close")
     try:
         input()
     except EOFError:
         pass
     return 0
+
+
+def _last_decision(state_dir):
+    try:
+        with open(os.path.join(state_dir, "last_notice")) as handle:
+            key, _, notified = handle.read().partition("\n")
+    except IOError:
+        return None
+    return "%s%s" % (key, "" if notified == "1" else "  (toast never appeared)")
 
 
 def _describe(snapshot):

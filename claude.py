@@ -166,6 +166,12 @@ def inspect(paths, now):
     return active, read_limits(config, now)
 
 
+def has_parked_credential(paths, account_id):
+    """An account whose parked credential went missing cannot be rotated to,
+    and the only way to find out is to look."""
+    return _read_credential(_parked_service(account_id), paths.keychain_account) is not None
+
+
 def load_accounts(paths, names):
     """Enrolled accounts in the configured preference order. An unknown name is
     skipped rather than fatal, so a typo cannot stop rotation entirely."""
