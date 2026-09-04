@@ -30,7 +30,13 @@ def _proper_lock(path, stale_ms, busy_message):
     try:
         os.mkdir(path)
     except FileExistsError:
-        if (time.time() - os.path.getmtime(path)) * 1000 < stale_ms:
+        try:
+            age_ms = (time.time() - os.path.getmtime(path)) * 1000
+        except FileNotFoundError:
+            # Released between the two calls. There is no holder to respect,
+            # so fall through to the retake below rather than raising.
+            age_ms = stale_ms
+        if age_ms < stale_ms:
             raise RuntimeError(busy_message)
         # Another process may be breaking the same lock. The loser must back
         # off rather than assume it holds it too.

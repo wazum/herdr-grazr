@@ -961,6 +961,27 @@ class OAuthRefreshLockTest(unittest.TestCase):
         long_ago = time.time() - (claude.OAUTH_LOCK_STALE_MS / 1000) - 10
         os.utime(self.lock_path, (long_ago, long_ago))
 
+    def test_a_lock_released_between_the_two_calls_is_taken_not_a_crash(self):
+        """The holder let go in the moment between mkdir failing and the age
+        check. What is left is a free lock to take, not an error to raise on
+        the hook that happened to look just then."""
+        os.mkdir(self.lock_path)
+        real_getmtime = os.path.getmtime
+        vanished = []
+
+        def getmtime_already_gone(path, *arguments):
+            if path == self.lock_path and not vanished:
+                vanished.append(path)
+                os.rmdir(path)
+                raise FileNotFoundError(path)
+            return real_getmtime(path, *arguments)
+
+        with mock.patch("os.path.getmtime", getmtime_already_gone):
+            with claude._oauth_refresh_lock(self.config_dir):
+                self.assertTrue(os.path.isdir(self.lock_path))
+
+        self.assertFalse(os.path.exists(self.lock_path))
+
     def test_losing_the_race_to_break_a_stale_lock_backs_off(self):
         """Another process broke the same lock first and now holds it. That
         must read as busy, not as a traceback."""
