@@ -14,6 +14,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   When nothing is fit to take over, it says so in a toast with the earliest
   reset time, since a key that appears to do nothing is worse than no key.
 
+### Changed
+
+- Reset times in toasts and the log read as a local weekday and clock time,
+  such as "Fri 01:00", instead of a UTC timestamp with microseconds.
+
 ## 0.1.1 - 2026-09-04
 
 ### Changed

@@ -141,8 +141,9 @@ def act_on(decision, paths, store, state_dir, active_id, limits, dry_run, accoun
 
 
 def _soonest_reset(now, *snapshots):
-    """When the first window anywhere reopens. A snapshot can hold one that
-    already has, and naming that would give a time in the past."""
+    """When the first window anywhere reopens, as a local weekday and clock
+    time, since it ends up in a toast. A snapshot can hold one that already
+    has, and naming that would give a time in the past."""
     times = [
         entry.resets_at
         for snapshot in snapshots
@@ -150,7 +151,7 @@ def _soonest_reset(now, *snapshots):
         for entry in snapshot
         if entry.resets_at and entry.resets_at > now
     ]
-    return min(times).isoformat() if times else None
+    return min(times).astimezone().strftime("%a %H:%M") if times else None
 
 
 def _announce_once(state_dir, key, title, body):

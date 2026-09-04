@@ -26,6 +26,11 @@ SOONER = datetime(2026, 9, 4, 14, 0, tzinfo=timezone.utc)
 THRESHOLDS = {"session": 15, "weekly": 20}
 
 
+def clock(when):
+    """How grazr names a reset time to a person: local weekday and time."""
+    return when.astimezone().strftime("%a %H:%M")
+
+
 def limit(group="session", remaining=50, kind=None, scope=None, resets_at=LATER):
     return Limit(kind=kind or group, scope=scope, group=group, remaining=remaining, resets_at=resets_at)
 
@@ -1950,7 +1955,7 @@ class ActOnDecisionTest(unittest.TestCase):
 
         line = self.act("exhausted", limits=active, accounts=others)
 
-        self.assertIn(SOONER.isoformat(), line)
+        self.assertIn(clock(SOONER), line)
 
     def test_a_reset_already_in_the_past_is_not_announced(self):
         """Otherwise it says the wait ended hours ago."""
@@ -1961,8 +1966,8 @@ class ActOnDecisionTest(unittest.TestCase):
 
         line = self.act("exhausted", limits=limits, now=NOW)
 
-        self.assertIn(LATER.isoformat(), line)
-        self.assertNotIn(EARLIER.isoformat(), line)
+        self.assertIn(clock(LATER), line)
+        self.assertNotIn(clock(EARLIER), line)
 
     def test_the_soonest_reset_is_the_earliest_not_the_latest(self):
         limits = [
@@ -1972,7 +1977,8 @@ class ActOnDecisionTest(unittest.TestCase):
 
         line = self.act("exhausted", limits=limits)
 
-        self.assertIn(SOONER.isoformat(), line)
+        self.assertIn(clock(SOONER), line)
+        self.assertNotIn("+00:00", line, "a person reads a clock, not an ISO timestamp")
 
     def test_exhaustion_without_usable_limits_still_reports(self):
         for limits in ("unknown", "locked", [], [limit(resets_at=None)]):
@@ -2239,7 +2245,7 @@ class SwapTest(EnrolledPairFixture):
 
         _, printed = self.invoke(grazr.swap)
 
-        self.assertIn(spent_until.isoformat(), printed)
+        self.assertIn(clock(spent_until), printed)
 
     def test_a_pane_holding_the_rotation_lock_makes_it_wait_its_turn(self):
         held = open(os.path.join(self.state_dir, "rotate.lock"), "w")
