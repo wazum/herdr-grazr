@@ -1,0 +1,83 @@
+name: API canary
+
+# grazr leans on an endpoint Anthropic never documented. When it moves, the
+# symptom is grazr quietly falling back to Claude's cached reading, which is
+# exactly the blind spot the call exists to cover. A failed scheduled run is
+# the warning, so this is the one job allowed to fail for outside reasons.
+on:
+  schedule:
+    # Daily at an unpopular minute, but most runs roll the dice and stop
+    # without asking anything. Two anonymous requests roughly once a week, at
+    # no fixed hour and on no fixed day, is a canary rather than a pattern.
+    - cron: "37 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  endpoints:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: The usage endpoint is still there
+        # No secrets: an unauthenticated GET is refused, and being refused is
+        # itself proof the path exists. A path that is gone answers 404, so the
+        # bogus sibling below is a control -- without it, an API that starts
+        # answering 404 to everything would read as healthy forever.
+        env:
+          FORCED: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          python3 - <<'PY'
+          import os, random, sys, time, urllib.error, urllib.request
+          sys.path.insert(0, ".")
+          import claude
+
+          ODDS = 7  # one scheduled run in seven actually asks
+          if os.environ.get("FORCED") != "true" and random.randrange(ODDS):
+              print("skipping this run on purpose; the schedule must not be a pattern")
+              raise SystemExit(0)
+          time.sleep(random.uniform(0, 900))
+
+          def status(url):
+              request = urllib.request.Request(url, headers={"Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(request, timeout=10) as response:
+                      return response.status
+              except urllib.error.HTTPError as refusal:
+                  return refusal.code
+
+          def status_after_retries(url, attempts=3):
+              for attempt in range(attempts):
+                  try:
+                      return status(url)
+                  except OSError as error:
+                      if attempt == attempts - 1:
+                          raise
+                      print("%s: %s, retrying" % (url, error))
+                      time.sleep(30)
+
+          bogus = claude.USAGE_URL.rsplit("/", 1)[0] + "/grazr_canary_no_such_endpoint"
+          live = status_after_retries(claude.USAGE_URL)
+          control = status_after_retries(bogus)
+          print("%s -> %s" % (claude.USAGE_URL, live))
+          print("%s -> %s" % (bogus, control))
+
+          problems = []
+          if control != 404:
+              problems.append(
+                  "a path that does not exist answered %s, not 404, so this check "
+                  "can no longer tell a missing endpoint from a live one" % control
+              )
+          if live in (404, 410):
+              problems.append(
+                  "%s answered %s: grazr's live usage call is dead and every hook "
+                  "is back to trusting Claude's cached reading" % (claude.USAGE_URL, live)
+              )
+          if problems:
+              print("\n".join("FAIL: " + problem for problem in problems))
+              raise SystemExit(1)
+          print("both endpoints behave as grazr expects")
+          PY
