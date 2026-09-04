@@ -64,7 +64,7 @@ Start with `DRY_RUN=1` for a day. Decisions show up in `herdr plugin log`.
 
 **Herdr toasts are off by default**, so grazr's notification will not show
 until you turn them on. `herdr notification show` also exits 0 when it shows
-nothing, so a plugin has to read the JSON to tell. Add this to
+nothing, so grazr reads the JSON to find out. Add this to
 `~/.config/herdr/config.toml`:
 
 ```toml
@@ -89,19 +89,20 @@ Herdr drops a toast while another one is on screen. For the "nothing left" and
 instead of assuming you read it. A rotation is announced once, so a dropped
 toast still leaves the swap in `herdr plugin log`.
 
-### Remote Control
+## After a swap
 
-Claude's Remote Control belongs to the signed-in account. It disconnects on
-every swap, and you restart it with `/remote-control` in each pane you care
-about. grazr says so in its notification. It will not type that command for
-you, because that would mean writing into panes that may be mid-turn, and grazr
-never touches the screen.
-
-To see what is enrolled and what each account has left:
+grazr says which account it moved to, in a toast and in `herdr plugin log`. To
+see what is enrolled and what each account has left:
 
 ```sh
 herdr plugin pane open --plugin wazum.grazr --entrypoint status
 ```
+
+Claude's Remote Control belongs to the signed-in account, so it disconnects on
+every swap. Restart it with `/remote-control` in each pane you care about.
+grazr says so in its notification, but it will not type the command for you.
+That would mean writing into panes that may be mid-turn, and grazr never
+touches the screen.
 
 ## What it will not do
 
@@ -116,9 +117,9 @@ herdr plugin pane open --plugin wazum.grazr --entrypoint status
 
 ## Policy
 
-grazr rotates between subscriptions that belong to one person: the person
-running it, who pays for them. It never shares credentials, never routes
-requests through another client, and never changes the `claude` binary.
+grazr rotates between subscriptions that all belong to the person running it.
+It never shares credentials, never routes requests through another client, and
+never changes the `claude` binary.
 
 Anthropic's public documents do not limit how many accounts one person may
 have, and they do not cover switching between two of your own plans. The Claude
