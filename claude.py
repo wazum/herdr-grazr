@@ -208,7 +208,10 @@ def load_accounts(paths, names):
         if filename.startswith(".") or not filename.endswith(".json"):
             continue
         identifier = filename[: -len(".json")]
-        stored = _load_account(paths, identifier)
+        try:
+            stored = _load_account(paths, identifier)
+        except (OSError, ValueError):
+            continue
         by_name[stored.get("name", identifier)] = core.Account(
             id=identifier,
             name=stored.get("name", identifier),

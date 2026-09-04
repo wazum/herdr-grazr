@@ -932,6 +932,15 @@ class InspectTest(unittest.TestCase):
         self.assertEqual(accounts[0].id, "uuid-personal")
         self.assertEqual(accounts[0].snapshot, "locked")
 
+    def test_one_corrupt_account_file_does_not_hide_the_others(self):
+        """The store is read whole on the rotate path, so a single bad file
+        would otherwise stop rotation for every account."""
+        self.write_account("uuid-work", {"name": "work"})
+        with open(os.path.join(self.accounts_dir, "uuid-broken.json"), "w") as handle:
+            handle.write("{not json at all")
+
+        self.assertEqual([a.name for a in claude.load_accounts(self.paths, [])], ["work"])
+
     def test_it_ignores_anything_that_is_not_an_account_file(self):
         """The directory also holds grazr's own atomic-write leftovers."""
         self.write_account("uuid-work", {"name": "work"})
