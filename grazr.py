@@ -15,6 +15,7 @@ import shlex
 import subprocess
 import sys
 import termios
+import time
 import tty
 from collections import namedtuple
 from datetime import datetime, timezone
@@ -23,7 +24,7 @@ import claude
 import core
 import stores
 
-Config = namedtuple("Config", "thresholds accounts enabled dry_run")
+Config = namedtuple("Config", "thresholds accounts enabled dry_run live_usage_below")
 
 DEFAULT_CONFIG = """\
 # Rotate when a limit group has less than this percent left.
@@ -35,6 +36,12 @@ ACCOUNTS=""
 
 ENABLED=1
 DRY_RUN=0                # 1 = log the decision, do not swap
+
+# Claude can leave its cached usage unrefreshed for over an hour, long enough
+# for a window to run dry unseen. Below this much headroom, grazr asks the same
+# endpoint Claude asks, at most once every few minutes. 0 turns that off and
+# leaves grazr with whatever Claude last wrote down.
+LIVE_USAGE_BELOW=50
 """
 
 _THRESHOLD_KEYS = {"REMAINING_SESSION": ("session", 15), "REMAINING_WEEKLY": ("weekly", 20)}
@@ -45,6 +52,9 @@ TURN_ENDS = ("idle", "done")
 
 # Telling the user is worth a moment, but not a stuck hook on every turn end.
 NOTIFY_TIMEOUT_SECONDS = 5
+
+# The floor between two live usage calls, however many panes are idling.
+FETCH_INTERVAL_SECONDS = 300
 
 
 def notify(title, body, spawn=subprocess.run):
@@ -225,13 +235,22 @@ def load_config(path):
     for key, (group, default) in _THRESHOLD_KEYS.items():
         thresholds[group] = _percent(settings.pop(key, None), key, default)
     flags = [_flag(settings.pop(key, None), key, default) for key, default in _FLAG_KEYS]
+    live_usage_below = _percent(
+        settings.pop("LIVE_USAGE_BELOW", None), "LIVE_USAGE_BELOW", 50
+    )
     accounts = shlex.split(settings.pop("ACCOUNTS", "") or "")
     if len(set(accounts)) != len(accounts):
         raise ValueError("ACCOUNTS lists the same account twice: %s" % " ".join(accounts))
     if settings:
         raise ValueError("unknown setting(s): %s" % ", ".join(sorted(settings)))
 
-    return Config(thresholds=thresholds, accounts=accounts, enabled=flags[0], dry_run=flags[1])
+    return Config(
+        thresholds=thresholds,
+        accounts=accounts,
+        enabled=flags[0],
+        dry_run=flags[1],
+        live_usage_below=live_usage_below,
+    )
 
 
 def _seed_config(path):
@@ -331,6 +350,9 @@ def hook():
     if active is None:
         return 0
 
+    if _worth_asking(limits, config.live_usage_below) and _fetch_due(state_dir):
+        limits = claude.fetch_limits(store) or limits
+
     # The common path ends here: no account store, no lock, no subprocess.
     if not core.needs_rotation(limits, now, config.thresholds):
         return 0
@@ -340,7 +362,13 @@ def hook():
     with _rotation_lock(state_dir) as acquired:
         if not acquired:
             return 0
-        active, limits = claude.inspect(paths, now)
+        # Another pane may have swapped while this one waited for the lock, and
+        # then the reading above describes an account we already left. Only
+        # that case is worth re-reading for: otherwise the live reading taken
+        # above is the better of the two.
+        swapped_to, its_limits = claude.inspect(paths, now)
+        if swapped_to != active:
+            active, limits = swapped_to, its_limits
         accounts = claude.load_accounts(paths, config.accounts)
         decision = core.decide(limits, active, accounts, now, config.thresholds)
         line = act_on(
@@ -350,6 +378,34 @@ def hook():
     if line:
         print(line)
     return 0
+
+
+def _worth_asking(limits, below):
+    """Plenty of headroom needs no second opinion, and a restricted account has
+    nothing to learn. What is left is the band where a swap may be due, plus
+    "unknown", which is the stale cache that hid a spent window in the first
+    place."""
+    if not below or limits == "locked":
+        return False
+    if limits == "unknown":
+        return True
+    return any(entry.remaining < below for entry in limits)
+
+
+def _fetch_due(state_dir):
+    """Several panes go idle at once and the endpoint rate-limits, so the
+    interval is shared through a file rather than kept per process."""
+    marker = os.path.join(state_dir, "last_usage_fetch")
+    try:
+        if time.time() - os.path.getmtime(marker) < FETCH_INTERVAL_SECONDS:
+            return False
+    except OSError:
+        pass
+    # Stamped before the call, not after: a slow endpoint must not release
+    # every other pane to pile on behind it.
+    with open(marker, "a"):
+        os.utime(marker, None)
+    return True
 
 
 @contextlib.contextmanager

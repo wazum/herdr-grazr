@@ -2018,6 +2018,60 @@ class HookTest(unittest.TestCase):
         ):
             return grazr.hook()
 
+    def write_stale_usage(self, percent):
+        """What Claude leaves behind when it has not refreshed in over an hour,
+        which is the state that let a window run dry unnoticed."""
+        long_ago = datetime.now(timezone.utc) - timedelta(hours=2)
+        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
+            json.dump(
+                config_json(
+                    fetched_at=long_ago,
+                    limits=[{"kind": "session", "group": "session", "percent": percent,
+                             "resets_at": None, "scope": None}],
+                ),
+                handle,
+            )
+
+    def test_a_reading_too_old_to_trust_is_replaced_by_a_live_one(self):
+        self.write_stale_usage(percent=20)
+        fresh = [Limit("session", None, "session", 2, None)]
+
+        with mock.patch.object(claude, "fetch_limits", lambda store, **kwargs: fresh):
+            self.run_hook()
+
+        self.assertEqual(len(self.rotations), 1, "the live reading is what decides")
+
+    def test_a_healthy_cached_reading_is_never_second_guessed(self):
+        """The call costs a round trip on a path that runs on every turn end of
+        every pane, so plenty of headroom must not reach for the network."""
+        self.write_usage(percent=10)
+        asked = []
+
+        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
+            self.run_hook()
+
+        self.assertEqual(asked, [])
+
+    def test_panes_going_idle_together_ask_once_not_once_each(self):
+        self.write_stale_usage(percent=20)
+        asked = []
+
+        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
+            for _ in range(4):
+                self.run_hook()
+
+        self.assertEqual(len(asked), 1)
+
+    def test_setting_the_watch_mark_to_zero_never_asks(self):
+        self.write_stale_usage(percent=99)
+        self.write_config('ACCOUNTS="work personal"\nLIVE_USAGE_BELOW=0\n')
+        asked = []
+
+        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
+            self.run_hook()
+
+        self.assertEqual(asked, [])
+
     def test_a_spent_account_rotates(self):
         self.assertEqual(self.run_hook(), 0)
 
