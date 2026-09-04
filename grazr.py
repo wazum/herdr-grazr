@@ -69,7 +69,7 @@ def notify(title, body, spawn=subprocess.run):
         return False
 
 
-def act_on(decision, paths, state_dir, active_id, limits, dry_run, accounts=()):
+def act_on(decision, paths, state_dir, active_id, limits, dry_run, accounts=(), now=None):
     """Carry out what core.decide concluded, and report it. Returns the line
     that goes to stdout, which Herdr keeps in `herdr plugin log`."""
     if decision == "stay":
@@ -88,7 +88,11 @@ def act_on(decision, paths, state_dir, active_id, limits, dry_run, accounts=()):
         return line if announced else None
 
     if decision == "exhausted":
-        soonest = _soonest_reset(limits, *(entry.snapshot for entry in accounts))
+        soonest = _soonest_reset(
+            now or datetime.now(timezone.utc),
+            limits,
+            *(entry.snapshot for entry in accounts)
+        )
         line = "every account is spent, earliest reset %s" % (soonest or "unknown")
         announced = _announce_once(
             state_dir, "exhausted:%s" % soonest, "Grazr: no headroom left", line
@@ -108,15 +112,15 @@ def act_on(decision, paths, state_dir, active_id, limits, dry_run, accounts=()):
     return line
 
 
-def _soonest_reset(*snapshots):
-    """When the first window anywhere reopens. Each snapshot may be a sentinel
-    string rather than a list, and a limit may carry no reset time at all."""
+def _soonest_reset(now, *snapshots):
+    """When the first window anywhere reopens. A snapshot can hold one that
+    already has, and naming that would give a time in the past."""
     times = [
         entry.resets_at
         for snapshot in snapshots
         if isinstance(snapshot, list)
         for entry in snapshot
-        if entry.resets_at
+        if entry.resets_at and entry.resets_at > now
     ]
     return min(times).isoformat() if times else None
 

@@ -21,6 +21,7 @@ from core import Account, Limit, decide
 NOW = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
 LATER = datetime(2026, 9, 4, 17, 0, tzinfo=timezone.utc)
 EARLIER = datetime(2026, 9, 4, 7, 0, tzinfo=timezone.utc)
+SOONER = datetime(2026, 9, 4, 14, 0, tzinfo=timezone.utc)
 THRESHOLDS = {"session": 15, "weekly": 20}
 
 
@@ -1308,7 +1309,7 @@ class ActOnDecisionTest(unittest.TestCase):
         self.notices.append(title)
         return True
 
-    def act(self, decision, dry_run=False, limits=None, accounts=None):
+    def act(self, decision, dry_run=False, limits=None, accounts=None, now=None):
         with mock.patch.object(
             claude, "rotate", lambda *arguments: self.rotations.append(arguments)
         ), mock.patch.object(grazr, "notify", self.record_notice):
@@ -1320,6 +1321,7 @@ class ActOnDecisionTest(unittest.TestCase):
                 limits or [],
                 dry_run,
                 accounts or [],
+                now or NOW,
             )
 
     def test_staying_is_silent(self):
@@ -1402,23 +1404,35 @@ class ActOnDecisionTest(unittest.TestCase):
         active = [limit(group="session", remaining=0, resets_at=LATER)]
         others = [
             account_named("spent", "uuid-spent", snapshot=[
-                limit(group="session", remaining=0, resets_at=EARLIER)
+                limit(group="session", remaining=0, resets_at=SOONER)
             ])
         ]
 
         line = self.act("exhausted", limits=active, accounts=others)
 
-        self.assertIn(EARLIER.isoformat(), line)
+        self.assertIn(SOONER.isoformat(), line)
+
+    def test_a_reset_already_in_the_past_is_not_announced(self):
+        """Otherwise it says the wait ended hours ago."""
+        limits = [
+            limit(group="session", remaining=0, resets_at=EARLIER),
+            limit(group="weekly", remaining=0, resets_at=LATER),
+        ]
+
+        line = self.act("exhausted", limits=limits, now=NOW)
+
+        self.assertIn(LATER.isoformat(), line)
+        self.assertNotIn(EARLIER.isoformat(), line)
 
     def test_the_soonest_reset_is_the_earliest_not_the_latest(self):
         limits = [
             limit(group="weekly", remaining=0, resets_at=LATER),
-            limit(group="session", remaining=0, resets_at=EARLIER),
+            limit(group="session", remaining=0, resets_at=SOONER),
         ]
 
         line = self.act("exhausted", limits=limits)
 
-        self.assertIn(EARLIER.isoformat(), line)
+        self.assertIn(SOONER.isoformat(), line)
 
     def test_exhaustion_without_usable_limits_still_reports(self):
         for limits in ("unknown", "locked", [], [limit(resets_at=None)]):
