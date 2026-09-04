@@ -14,16 +14,19 @@ subscriptions that are all yours.
 
 ## How it works
 
+<img width="880" src="docs/how-grazr-works.svg"
+     alt="Flowchart of grazr's response when a Claude pane finishes a turn: it reads Claude's cached usage, stays put unless that usage is both trustworthy and nearly spent, and otherwise swaps the stored keychain credential to a fresh account, which Claude picks up within its thirty-second cache.">
+
 You log in to each account once, with Claude's own `claude auth login`. grazr
 never sees a password and never mints a token. It copies the credential that a
 normal login already produced into its own keychain item, then copies it back
 when that account's turn comes. The `claude` binary is unmodified, and it
-re-reads its credential every 30 seconds — that is what makes the swap
+re-reads its credential every 30 seconds. That is what makes the swap
 invisible.
 
-Nothing secret is written to disk. Parked credentials stay in the macOS
-keychain. The files in the state directory hold only names, identities and the
-last known headroom.
+grazr writes no secrets to disk. Parked credentials stay in the macOS keychain,
+and the files in the state directory hold only names, identities and the last
+known headroom.
 
 ## Install
 
@@ -60,9 +63,9 @@ Start with `DRY_RUN=1` for a day. Decisions show up in `herdr plugin log`.
 ### Turn Herdr's toasts on
 
 **Herdr toasts are off by default**, so grazr's notification will not show
-until you turn them on. Worse, `herdr notification show` exits 0 even when it
-shows nothing, and a plugin cannot tell the difference without reading the
-JSON. Add this to `~/.config/herdr/config.toml`:
+until you turn them on. `herdr notification show` also exits 0 when it shows
+nothing, so a plugin has to read the JSON to tell. Add this to
+`~/.config/herdr/config.toml`:
 
 ```toml
 [ui.toast]
@@ -76,23 +79,23 @@ position = "bottom-right"
 Then run `herdr server reload-config`. Pick `terminal` instead of `herdr` if
 you work over SSH, or `system` for macOS Notification Centre.
 
-Two things to expect. A plugin toast lasts about three seconds and there is no
-setting for it, so grazr keeps the text to one short line and plays a sound.
-Pick `system` or `terminal` delivery if you would rather read it at your own
-pace. Set `HERDR_DISABLE_SOUND=1` for silence.
+A plugin toast lasts about three seconds and there is no setting for it, so
+grazr keeps the text to one short line and plays a sound. Pick `system` or
+`terminal` delivery to read it at your own pace, or set
+`HERDR_DISABLE_SOUND=1` for silence.
 
-Herdr also drops a toast while another one is on screen. For the "nothing
-left" and "account restricted" messages, grazr sees that and says it again next
-time instead of assuming you read it. A rotation is announced once, so if that
-toast is dropped, the swap is still in `herdr plugin log`.
+Herdr drops a toast while another one is on screen. For the "nothing left" and
+"account restricted" messages, grazr notices and says it again next time
+instead of assuming you read it. A rotation is announced once, so a dropped
+toast still leaves the swap in `herdr plugin log`.
 
 ### Remote Control
 
 Claude's Remote Control belongs to the signed-in account. It disconnects on
 every swap, and you restart it with `/remote-control` in each pane you care
 about. grazr says so in its notification. It will not type that command for
-you — that would mean writing into panes that may be mid-turn, and grazr never
-touches the screen.
+you, because that would mean writing into panes that may be mid-turn, and grazr
+never touches the screen.
 
 To see what is enrolled and what each account has left:
 
