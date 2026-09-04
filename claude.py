@@ -367,8 +367,11 @@ def _account_id(value):
     """The server's account id becomes a filename and a keychain service, so it
     has to be a plain uuid and nothing else."""
     try:
-        if str(uuid.UUID(str(value))) == value:
-            return value
+        # Compared case-insensitively: some providers return uppercase, and it
+        # is the same account. The canonical lowercase form is what gets used.
+        canonical = str(uuid.UUID(str(value)))
+        if canonical == value.lower():
+            return canonical
     except (AttributeError, TypeError, ValueError):
         pass
     raise RuntimeError("that login has no usable account identity: %r" % (value,))

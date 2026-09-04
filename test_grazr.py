@@ -1029,6 +1029,13 @@ class EnrolTest(unittest.TestCase):
 
         self.assertEqual(self.installed, [("grazr-" + self.WORK, "LIVE-ISOLATED")])
 
+    def test_an_uppercase_uuid_is_accepted(self):
+        """Some providers hand back uppercase. It is the same account."""
+        with open(self.config_path, "w") as handle:
+            json.dump({"oauthAccount": {"accountUuid": self.WORK.upper()}}, handle)
+
+        self.assertEqual(self.run_enrol(), self.WORK)
+
     def test_an_account_id_that_is_not_a_uuid_is_refused(self):
         """The id comes from the server and becomes a filename, so it must not
         be able to point anywhere but the account store."""
