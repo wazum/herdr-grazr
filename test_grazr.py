@@ -1031,6 +1031,22 @@ class EnrolTest(unittest.TestCase):
                     self.run_enrol()
         self.assertEqual(self.installed, [])
 
+    def test_nothing_to_delete_is_not_a_failure(self):
+        """Cancelling `claude auth login` leaves no item, and security exits 44
+        for that. Reporting it would warn about a leak that never happened."""
+        isolated = os.path.join(self.directory, "enrol-tmp")
+        os.mkdir(isolated)
+
+        removed = claude.discard_isolated_login(
+            self.paths,
+            isolated,
+            spawn=lambda argv, **kw: SimpleNamespace(
+                returncode=44, stdout="", stderr="could not be found"
+            ),
+        )
+
+        self.assertTrue(removed)
+
     def test_a_failed_keychain_delete_is_reported(self):
         """A stranded credential nobody tracks is exactly what this cleans up."""
         isolated = os.path.join(self.directory, "enrol-tmp")

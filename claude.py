@@ -35,6 +35,10 @@ CONFIG_LOCK_STALE_MS = 60_000
 # inside the lock stale ages.
 SECURITY_TIMEOUT_SECONDS = 15
 
+# errSecItemNotFound. Any other non-zero exit means the keychain itself was
+# unhappy, which is not the same as the item being absent.
+ITEM_NOT_FOUND = 44
+
 
 @contextlib.contextmanager
 def _proper_lock(path, stale_ms, busy_message):
@@ -311,7 +315,7 @@ def discard_isolated_login(paths, config_dir, spawn=subprocess.run):
             capture_output=True,
             timeout=SECURITY_TIMEOUT_SECONDS,
         )
-        removed = getattr(completed, "returncode", 0) == 0
+        removed = getattr(completed, "returncode", 0) in (0, ITEM_NOT_FOUND)
     except (OSError, subprocess.TimeoutExpired):
         removed = False
     shutil.rmtree(config_dir, ignore_errors=True)
