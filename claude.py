@@ -30,6 +30,10 @@ OAUTH_LOCK_STALE_MS = 60_000
 # built at runtime. Its stale age is not published, so this matches the other.
 CONFIG_LOCK_STALE_MS = 60_000
 
+# Comfortably inside the lock stale ages: a keychain call that hangs longer
+# would let Claude judge grazr's lock abandoned while grazr still holds it.
+SECURITY_TIMEOUT_SECONDS = 20
+
 
 @contextlib.contextmanager
 def _proper_lock(path, stale_ms, busy_message):
@@ -68,10 +72,17 @@ def _oauth_refresh_lock(config_dir):
 
 
 def _run_security(line, spawn=subprocess.run):
-    """Feed one command to `security -i`. The secret rides stdin; argv stays clean."""
-    completed = spawn(
-        ["security", "-i"], input=line + "\n", capture_output=True, text=True
-    )
+    """Feed one command to `security -i`. The secret rides stdin, argv stays clean."""
+    try:
+        completed = spawn(
+            ["security", "-i"],
+            input=line + "\n",
+            capture_output=True,
+            text=True,
+            timeout=SECURITY_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("the keychain did not answer within %ds" % SECURITY_TIMEOUT_SECONDS)
     if completed.returncode != 0:
         # security echoes the tail of the blob when it rejects a truncated line,
         # and this message reaches the plugin log.
@@ -369,11 +380,15 @@ def _write_oauth_account(config_path, oauth_account):
 def _read_credential(service, account, spawn=subprocess.run):
     """The stored blob, or None when there is no such item. Service and account
     are not secrets, so argv is fine here; the blob comes back on stdout."""
-    completed = spawn(
-        ["security", "find-generic-password", "-s", service, "-a", account, "-w"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        completed = spawn(
+            ["security", "find-generic-password", "-s", service, "-a", account, "-w"],
+            capture_output=True,
+            text=True,
+            timeout=SECURITY_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("the keychain did not answer within %ds" % SECURITY_TIMEOUT_SECONDS)
     if completed.returncode != 0:
         return None
     stored = completed.stdout.strip()

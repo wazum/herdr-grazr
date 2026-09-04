@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -279,7 +280,7 @@ class SecurityRunnerTest(unittest.TestCase):
     def test_the_secret_travels_on_stdin_and_never_on_argv(self):
         recorded = {}
 
-        def fake_subprocess(argv, input, capture_output, text):
+        def fake_subprocess(argv, input, capture_output, text, **kwargs):
             recorded["argv"] = argv
             recorded["input"] = input
             return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -293,18 +294,42 @@ class SecurityRunnerTest(unittest.TestCase):
         self.assertTrue(recorded["input"].endswith("\n"))
 
     def test_a_failing_security_call_raises_rather_than_passing_silently(self):
-        def fake_subprocess(argv, input, capture_output, text):
+        def fake_subprocess(argv, input, capture_output, text, **kwargs):
             return SimpleNamespace(returncode=1, stdout="", stderr="security: unknown command")
 
         with self.assertRaises(RuntimeError):
             claude._run_security("add-generic-password -X deadbeef", spawn=fake_subprocess)
+
+    def test_every_keychain_call_is_bounded(self):
+        """A blocked keychain prompt would otherwise hang the hook forever, and
+        a hold past the stale age lets Claude break grazr's lock underneath it."""
+        seen = {}
+
+        def fake_subprocess(argv, **kwargs):
+            seen[argv[1]] = kwargs.get("timeout")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        claude._run_security("add-generic-password -X ab", spawn=fake_subprocess)
+        claude._read_credential("svc", "acct", spawn=fake_subprocess)
+
+        self.assertTrue(all(seen.values()), "every security call needs a timeout: %s" % seen)
+        self.assertLessEqual(max(seen.values()) * 1000, claude.OAUTH_LOCK_STALE_MS)
+
+    def test_a_hung_keychain_raises_rather_than_blocking(self):
+        def fake_subprocess(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout", 1))
+
+        with self.assertRaises(RuntimeError):
+            claude._run_security("add-generic-password -X ab", spawn=fake_subprocess)
+        with self.assertRaises(RuntimeError):
+            claude._read_credential("svc", "acct", spawn=fake_subprocess)
 
     def test_the_failure_message_carries_no_credential_hex(self):
         """On the truncation path security echoes the tail of the blob as its
         error. That message reaches the plugin log, so it must not be repeated."""
         leaked = "security: unknown command \"%s\"" % ("87" * 40)
 
-        def fake_subprocess(argv, input, capture_output, text):
+        def fake_subprocess(argv, input, capture_output, text, **kwargs):
             return SimpleNamespace(returncode=1, stdout="", stderr=leaked)
 
         with self.assertRaises(RuntimeError) as raised:
@@ -463,7 +488,7 @@ class CredentialReadTest(unittest.TestCase):
     def test_it_asks_for_the_named_item_and_returns_the_blob(self):
         recorded = {}
 
-        def fake_subprocess(argv, capture_output, text):
+        def fake_subprocess(argv, capture_output, text, **kwargs):
             recorded["argv"] = argv
             return SimpleNamespace(returncode=0, stdout='{"token":"abc"}\n', stderr="")
 
@@ -476,7 +501,7 @@ class CredentialReadTest(unittest.TestCase):
         )
 
     def test_a_hex_encoded_item_is_decoded(self):
-        def fake_subprocess(argv, capture_output, text):
+        def fake_subprocess(argv, capture_output, text, **kwargs):
             return SimpleNamespace(returncode=0, stdout='{"t":1}'.encode().hex() + "\n", stderr="")
 
         self.assertEqual(claude._read_credential("svc", "acct", spawn=fake_subprocess), '{"t":1}')
@@ -484,7 +509,7 @@ class CredentialReadTest(unittest.TestCase):
     def test_a_missing_item_is_none_rather_than_an_error(self):
         """Not-found is ordinary: an account is parked for the first time."""
 
-        def fake_subprocess(argv, capture_output, text):
+        def fake_subprocess(argv, capture_output, text, **kwargs):
             return SimpleNamespace(returncode=44, stdout="", stderr="could not be found")
 
         self.assertIsNone(claude._read_credential("svc", "acct", spawn=fake_subprocess))
@@ -1074,7 +1099,7 @@ class NotifyTest(unittest.TestCase):
     def notify(self, payload, herdr="/usr/bin/herdr"):
         recorded = {}
 
-        def fake_subprocess(argv, capture_output, text=False):
+        def fake_subprocess(argv, capture_output, text=False, **kwargs):
             recorded["argv"] = argv
             return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
 
