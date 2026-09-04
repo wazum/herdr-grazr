@@ -1206,6 +1206,46 @@ class EnrolTest(unittest.TestCase):
         self.assertEqual(self.installed, [("grazr-" + self.PERSONAL, "LIVE-PERSONAL")])
 
 
+class InteractiveExitTest(unittest.TestCase):
+    """A popup pane owns the terminal, so every way out has to be quiet."""
+
+    def read(self, text):
+        stream = io.StringIO(text)
+        stream.isatty = lambda: False
+        return grazr.read_key(stream)
+
+    def test_a_single_letter_is_taken_as_the_choice(self):
+        self.assertEqual(self.read("S\n"), "s")
+
+    def test_nothing_typed_reads_as_close(self):
+        for text in ("\n", ""):
+            with self.subTest(text=repr(text)):
+                self.assertIn(self.read(text), grazr.CLOSE_KEYS)
+
+    def test_escape_reads_as_close(self):
+        self.assertIn(grazr.ESCAPE, grazr.CLOSE_KEYS)
+        self.assertIn(self.read(grazr.ESCAPE), grazr.CLOSE_KEYS)
+
+    def test_ctrl_c_and_ctrl_d_leave_no_traceback(self):
+        for interrupt in (KeyboardInterrupt, EOFError):
+            with self.subTest(interrupt=interrupt.__name__):
+                with mock.patch.object(grazr, "enrol", side_effect=interrupt), \
+                        contextlib.redirect_stdout(io.StringIO()) as out:
+                    code = grazr.main(["grazr.py", "enrol"])
+
+                self.assertEqual(code, 130)
+                self.assertIn("cancelled", out.getvalue())
+
+    def test_the_menu_says_how_to_leave(self):
+        with mock.patch.object(grazr, "read_key", lambda: "q"), \
+                mock.patch.object(grazr, "_paths", side_effect=AssertionError):
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                code = grazr.enrol()
+
+        self.assertEqual(code, 0, "closing on purpose is not a failure")
+        self.assertIn("Esc", out.getvalue())
+
+
 class ConfigTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.mkdtemp()

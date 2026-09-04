@@ -50,7 +50,8 @@ herdr plugin pane open --plugin wazum.grazr --entrypoint enrol
 
 Pick `s` for the account you are logged into now. Pick `l` for each extra one.
 `l` logs in through a throwaway config directory, so your live session is never
-logged out.
+logged out. One keypress, no Return. `q` or `Esc` closes the pane without
+changing anything.
 
 Then list them in the order you want them used:
 

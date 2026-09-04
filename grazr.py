@@ -13,6 +13,8 @@ import os
 import shlex
 import subprocess
 import sys
+import termios
+import tty
 from collections import namedtuple
 from datetime import datetime, timezone
 
@@ -87,14 +89,14 @@ def act_on(decision, paths, state_dir, active_id, limits, dry_run, accounts=(), 
     if decision == "locked":
         line = "account %s is restricted, not rotating" % name_of(active_id)
         announced = _announce_once(
-            state_dir, "locked:%s" % active_id, "Grazr: account restricted", line
+            state_dir, "locked:%s" % active_id, "grazr: account restricted", line
         )
         return line if announced else None
 
     if decision == "unenrolled":
         line = "nothing to rotate to; enrol a second account and list it in ACCOUNTS"
         announced = _announce_once(
-            state_dir, "unenrolled", "Grazr: no second account", line
+            state_dir, "unenrolled", "grazr: no second account", line
         )
         return line if announced else None
 
@@ -106,7 +108,7 @@ def act_on(decision, paths, state_dir, active_id, limits, dry_run, accounts=(), 
         )
         line = "every account is spent, earliest reset %s" % (soonest or "unknown")
         announced = _announce_once(
-            state_dir, "exhausted:%s" % soonest, "Grazr: no headroom left", line
+            state_dir, "exhausted:%s" % soonest, "grazr: no headroom left", line
         )
         return line if announced else None
 
@@ -117,7 +119,7 @@ def act_on(decision, paths, state_dir, active_id, limits, dry_run, accounts=(), 
     claude.rotate(paths, active_id, next_id, limits)
     line = "rotated %s -> %s" % (name_of(active_id), name_of(next_id))
     notify(
-        "Grazr: now on %s" % name_of(next_id),
+        "grazr: now on %s" % name_of(next_id),
         "Remote Control needs /remote-control per pane",
     )
     return line
@@ -256,6 +258,31 @@ def _flag(value, key, default):
     return value == "1"
 
 
+ESCAPE = "\x1b"
+CLOSE_KEYS = (ESCAPE, "q", "\r", "\n", "")
+
+
+def read_key(stream=None):
+    """One keypress, no Enter, so Esc can close a pane. Falls back to a line
+    when stdin is not a terminal, which is how the tests drive it."""
+    stream = stream or sys.stdin
+    if not stream.isatty():
+        line = stream.readline()
+        return line.strip()[:1].lower() if line.strip() else ESCAPE
+
+    descriptor = stream.fileno()
+    saved = termios.tcgetattr(descriptor)
+    try:
+        tty.setraw(descriptor)
+        key = stream.read(1)
+    finally:
+        termios.tcsetattr(descriptor, termios.TCSADRAIN, saved)
+    if key == "\x03":
+        # Raw mode swallows the signal, so Ctrl+C has to be re-raised by hand.
+        raise KeyboardInterrupt
+    return key.lower()
+
+
 def _paths():
     state_dir = os.environ.get("HERDR_PLUGIN_STATE_DIR") or os.path.expanduser("~/.grazr")
     accounts_dir = os.path.join(state_dir, "accounts")
@@ -340,6 +367,15 @@ def _rotation_lock(state_dir):
 
 
 def main(argv):
+    try:
+        return _dispatch(argv)
+    except (KeyboardInterrupt, EOFError):
+        # A pane owns the terminal, so a traceback is the last thing to show.
+        print("\ncancelled")
+        return 130
+
+
+def _dispatch(argv):
     command = argv[1] if len(argv) > 1 else ""
     if command == "hook":
         return hook()
@@ -357,7 +393,6 @@ def status():
     now = datetime.now(timezone.utc)
     active, limits = claude.inspect(paths, now)
 
-    print("grazr — enrolled accounts and headroom\n")
     print("config: %s" % _config_path())
     print("thresholds: session %d%% / weekly %d%% remaining%s\n"
           % (config.thresholds["session"], config.thresholds["weekly"],
@@ -382,11 +417,8 @@ def status():
     last = _last_decision(state_dir)
     if last:
         print("\nlast reported: %s" % last)
-    print("\n(* = active)   press return to close")
-    try:
-        input()
-    except EOFError:
-        pass
+    print("\n(* = active)   press any key to close")
+    read_key()
     return 0
 
 
@@ -410,15 +442,18 @@ def _describe(snapshot):
 
 
 def enrol():
-    paths, _ = _paths()
-    print("grazr — enrol a Claude account\n")
+    # No title here: the pane border already carries it.
     print("  (s) save the login this machine is using now")
-    print("  (l) log in to another account, without touching the current one\n")
-    choice = input("choice [s/l]: ").strip().lower()
+    print("  (l) log in to another account, without touching the current one")
+    print("  (q) close, or press Esc\n")
+    print("choice: ", end="", flush=True)
+    choice = read_key()
+    print(choice if choice in ("s", "l") else "")
     if choice not in ("s", "l"):
-        print("nothing to do")
-        return 1
+        print("closed, nothing changed")
+        return 0
 
+    paths, _ = _paths()
     if choice == "s":
         return _enrol_from(paths, None)
 
