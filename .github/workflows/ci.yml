@@ -100,11 +100,12 @@ jobs:
               "pane.agent_status_changed"
           ]
           assert sorted(pane["id"] for pane in manifest["panes"]) == ["enrol", "status"]
+          assert [action["id"] for action in manifest["actions"]] == ["swap"]
 
           # Every command must name a file that is actually in the repo.
           import os
 
-          for entry in manifest["events"] + manifest["panes"]:
+          for entry in manifest["events"] + manifest["panes"] + manifest["actions"]:
               script = entry["command"][1]
               assert os.path.exists(script), "%s runs %s, which is absent" % (
                   entry.get("id", entry.get("on")),

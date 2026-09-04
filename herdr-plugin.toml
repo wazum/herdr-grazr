@@ -9,6 +9,13 @@ platforms = ["macos", "linux"]
 on = "pane.agent_status_changed"
 command = ["python3", "grazr.py", "hook"]
 
+[[actions]]
+id = "swap"
+title = "grazr: swap to the next account now"
+description = "Move to the first account in ACCOUNTS with headroom, without waiting for the threshold"
+contexts = ["global", "workspace"]
+command = ["python3", "grazr.py", "swap"]
+
 [[panes]]
 id = "enrol"
 title = "grazr: enrol a Claude account"

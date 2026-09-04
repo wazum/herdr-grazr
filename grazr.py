@@ -448,8 +448,38 @@ def _dispatch(argv):
         return status()
     if command == "enrol":
         return enrol()
-    print("usage: grazr.py hook|status|enrol", file=sys.stderr)
+    if command == "swap":
+        return swap()
+    print("usage: grazr.py hook|status|enrol|swap", file=sys.stderr)
     return 2
+
+
+def swap():
+    """A swap the user asked for, from a Herdr key. The active account's
+    headroom is not consulted, and ENABLED gates the hook only."""
+    config = load_config(_config_path())
+    paths, store, state_dir = _paths()
+    now = datetime.now(timezone.utc)
+    with _rotation_lock(state_dir) as acquired:
+        if not acquired:
+            print("grazr: busy rotating already, try again in a moment")
+            return 1
+        active, limits = claude.inspect(paths, now)
+        if active is None:
+            print("grazr: not logged in, nothing to swap from")
+            return 1
+        accounts = claude.load_accounts(paths, config.accounts)
+        next_id = core.next_account(active, accounts, now, config.thresholds)
+        if next_id is None:
+            print("grazr: nothing to swap to; every other account is spent or not enrolled")
+            return 1
+        print(
+            act_on(
+                ("rotate", next_id), paths, store, state_dir, active, limits,
+                config.dry_run, accounts, now,
+            )
+        )
+    return 0
 
 
 def status():

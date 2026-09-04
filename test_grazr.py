@@ -17,7 +17,7 @@ from unittest import mock
 import claude
 import grazr
 import stores
-from core import Account, Limit, decide
+from core import Account, Limit, decide, next_account
 
 NOW = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
 LATER = datetime(2026, 9, 4, 17, 0, tzinfo=timezone.utc)
@@ -148,6 +148,26 @@ class DecideTest(unittest.TestCase):
         self.assertEqual(
             decide(limits, active="work", accounts=accounts, now=NOW, thresholds=THRESHOLDS),
             ("rotate", "recovered"),
+        )
+
+
+class NextAccountTest(unittest.TestCase):
+    """The candidate rule on its own, for a swap the user asks for: the active
+    account's headroom is not a question, only who is fit to take over."""
+
+    def test_picks_the_first_fit_even_when_the_active_account_is_healthy(self):
+        accounts = [account("work"), spent_account(), account("fresh")]
+
+        self.assertEqual(
+            next_account(active="work", accounts=accounts, now=NOW, thresholds=THRESHOLDS),
+            "fresh",
+        )
+
+    def test_nobody_fit_is_none(self):
+        accounts = [account("work"), spent_account(), account("locked", snapshot="locked")]
+
+        self.assertIsNone(
+            next_account(active="work", accounts=accounts, now=NOW, thresholds=THRESHOLDS)
         )
 
 
@@ -1967,9 +1987,9 @@ class ActOnDecisionTest(unittest.TestCase):
         self.assertEqual(len(self.notices), 2)
 
 
-class HookTest(unittest.TestCase):
-    """The hook is what Herdr actually runs, and it carries the concurrency
-    argument: several panes go idle together and must produce one rotation."""
+class EnrolledPairFixture(unittest.TestCase):
+    """Two enrolled accounts, "work" active, in a state and config dir of their
+    own. Shared by the hook and the manual swap."""
 
     def setUp(self):
         self.directory = tempfile.mkdtemp()
@@ -2010,21 +2030,31 @@ class HookTest(unittest.TestCase):
                 handle,
             )
 
-    def run_hook(self, status="idle", now=None):
-        environment = {
-            "HERDR_PLUGIN_STATE_DIR": self.state_dir,
-            "HERDR_PLUGIN_CONFIG_DIR": self.state_dir,
-            "CLAUDE_CONFIG_DIR": self.claude_dir,
-            "HERDR_PLUGIN_EVENT_JSON": json.dumps(
-                {"data": {"agent": "claude", "agent_status": status}}
-            ),
-        }
+    def invoke(self, entry, **environment):
+        """Run an entry point against the fixture, recording rotations instead
+        of performing them. Returns (exit code, what it printed)."""
+        environment.update(
+            HERDR_PLUGIN_STATE_DIR=self.state_dir,
+            HERDR_PLUGIN_CONFIG_DIR=self.state_dir,
+            CLAUDE_CONFIG_DIR=self.claude_dir,
+        )
+        printed = io.StringIO()
         with mock.patch.dict(os.environ, environment), mock.patch.object(
             claude, "rotate", lambda *arguments: self.rotations.append(arguments)
         ), mock.patch.object(grazr, "notify", lambda title, body: True), contextlib.redirect_stdout(
-            io.StringIO()
+            printed
         ):
-            return grazr.hook()
+            return entry(), printed.getvalue()
+
+
+class HookTest(EnrolledPairFixture):
+    """The hook is what Herdr actually runs, and it carries the concurrency
+    argument: several panes go idle together and must produce one rotation."""
+
+    def run_hook(self, status="idle"):
+        event = json.dumps({"data": {"agent": "claude", "agent_status": status}})
+        code, _ = self.invoke(grazr.hook, HERDR_PLUGIN_EVENT_JSON=event)
+        return code
 
     def write_stale_usage(self, percent):
         """What Claude leaves behind when it has not refreshed in over an hour,
@@ -2147,6 +2177,56 @@ class HookTest(unittest.TestCase):
             self.run_hook()
 
         self.assertEqual(len(inspected), 2, "inspect once to decide, once under the lock")
+
+
+class SwapTest(EnrolledPairFixture):
+    """A swap the user asks for, from a Herdr key. The active account's headroom
+    is not consulted; whether it wants to leave is the user's business."""
+
+    def test_swaps_off_a_healthy_account(self):
+        self.write_usage(percent=10)
+
+        code, printed = self.invoke(grazr.swap)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
+        self.assertIn("rotated work -> personal", printed)
+
+    def test_honours_dry_run(self):
+        self.write_config('ACCOUNTS="work personal"\nDRY_RUN=1\n')
+
+        code, printed = self.invoke(grazr.swap)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.rotations, [])
+        self.assertIn("DRY_RUN: would rotate work -> personal", printed)
+
+    def test_ignores_the_enabled_flag_that_gates_the_hook(self):
+        self.write_config('ACCOUNTS="work personal"\nENABLED=0\n')
+
+        self.invoke(grazr.swap)
+
+        self.assertEqual(len(self.rotations), 1)
+
+    def test_nowhere_to_go_is_reported_not_swapped(self):
+        self.write_config('ACCOUNTS="work"\n')
+
+        code, printed = self.invoke(grazr.swap)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(self.rotations, [])
+        self.assertIn("nothing to swap to", printed)
+
+    def test_a_pane_holding_the_rotation_lock_makes_it_wait_its_turn(self):
+        held = open(os.path.join(self.state_dir, "rotate.lock"), "w")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        code, printed = self.invoke(grazr.swap)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(self.rotations, [])
+        self.assertIn("busy", printed)
 
 
 class FitnessTest(unittest.TestCase):

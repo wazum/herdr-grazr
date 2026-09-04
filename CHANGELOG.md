@@ -4,6 +4,15 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- A `swap` action for a swap you ask for, bound to a Herdr key of your choice.
+  It moves to the first account in `ACCOUNTS` with headroom without waiting
+  for the threshold, honours `DRY_RUN`, and ignores `ENABLED`, which gates the
+  automatic path only.
+
 ## 0.1.1 - 2026-09-04
 
 ### Changed
