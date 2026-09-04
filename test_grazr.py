@@ -32,6 +32,10 @@ def account(identifier, snapshot=None):
     return Account(id=identifier, name=identifier, snapshot=snapshot)
 
 
+def account_named(name, identifier, snapshot=None):
+    return Account(id=identifier, name=name, snapshot=snapshot)
+
+
 class DecideTest(unittest.TestCase):
     def test_unknown_limits_stay(self):
         self.assertEqual(
@@ -1154,12 +1158,18 @@ class ActOnDecisionTest(unittest.TestCase):
         self.notices.append(title)
         return True
 
-    def act(self, decision, dry_run=False, limits=None):
+    def act(self, decision, dry_run=False, limits=None, accounts=None):
         with mock.patch.object(
             claude, "rotate", lambda *arguments: self.rotations.append(arguments)
         ), mock.patch.object(grazr, "notify", self.record_notice):
             return grazr.act_on(
-                decision, self.paths, self.state_dir, "uuid-work", limits or [], dry_run
+                decision,
+                self.paths,
+                self.state_dir,
+                "uuid-work",
+                limits or [],
+                dry_run,
+                accounts or [],
             )
 
     def test_staying_is_silent(self):
@@ -1173,6 +1183,18 @@ class ActOnDecisionTest(unittest.TestCase):
         self.assertEqual(len(self.rotations), 1)
         self.assertEqual(self.rotations[0][1:3], ("uuid-work", "uuid-personal"))
         self.assertEqual(len(self.notices), 1)
+
+    def test_it_reports_the_names_you_chose_not_uuids(self):
+        """You named these accounts at enrolment. A uuid fragment tells you
+        nothing about which subscription you are now spending."""
+        accounts = [account_named("work", "uuid-work"), account_named("personal", "uuid-personal")]
+
+        line = self.act(("rotate", "uuid-personal"), accounts=accounts)
+
+        self.assertIn("work", line)
+        self.assertIn("personal", line)
+        self.assertNotIn("uuid-", line)
+        self.assertNotIn("uuid-", self.notices[0])
 
     def test_a_dry_run_decides_but_never_swaps(self):
         self.act(("rotate", "uuid-personal"), dry_run=True)

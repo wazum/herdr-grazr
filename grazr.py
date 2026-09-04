@@ -69,14 +69,19 @@ def notify(title, body, spawn=subprocess.run):
         return False
 
 
-def act_on(decision, paths, state_dir, active_id, limits, dry_run):
+def act_on(decision, paths, state_dir, active_id, limits, dry_run, accounts=()):
     """Carry out what core.decide concluded, and report it. Returns the line
     that goes to stdout, which Herdr keeps in `herdr plugin log`."""
     if decision == "stay":
         return None
 
+    named = {entry.id: entry.name for entry in accounts}
+
+    def name_of(identifier):
+        return named.get(identifier, identifier)
+
     if decision == "locked":
-        line = "account %s is restricted; not rotating" % active_id
+        line = "account %s is restricted, not rotating" % name_of(active_id)
         announced = _announce_once(
             state_dir, "locked:%s" % active_id, "Grazr: account restricted", line
         )
@@ -92,11 +97,14 @@ def act_on(decision, paths, state_dir, active_id, limits, dry_run):
 
     _, next_id = decision
     if dry_run:
-        return "DRY_RUN: would rotate %s -> %s" % (active_id, next_id)
+        return "DRY_RUN: would rotate %s -> %s" % (name_of(active_id), name_of(next_id))
 
     claude.rotate(paths, active_id, next_id, limits)
-    line = "rotated %s -> %s" % (active_id, next_id)
-    notify("Grazr: now on %s" % next_id[:8], "Remote Control needs /remote-control per pane")
+    line = "rotated %s -> %s" % (name_of(active_id), name_of(next_id))
+    notify(
+        "Grazr: now on %s" % name_of(next_id),
+        "Remote Control needs /remote-control per pane",
+    )
     return line
 
 
@@ -271,7 +279,9 @@ def hook():
         active, limits = claude.inspect(paths, now)
         accounts = claude.load_accounts(paths, config.accounts)
         decision = core.decide(limits, active, accounts, now, config.thresholds)
-        line = act_on(decision, paths, state_dir, active, limits, config.dry_run)
+        line = act_on(
+            decision, paths, state_dir, active, limits, config.dry_run, accounts
+        )
 
     if line:
         print(line)
