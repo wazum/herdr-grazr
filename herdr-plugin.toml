@@ -1,6 +1,6 @@
 id = "wazum.grazr"
 name = "grazr"
-version = "0.1.0"
+version = "0.1.1"
 min_herdr_version = "0.8.0"
 description = "Automatically switches Claude Code to another of your accounts before the usage limit hits: account rotation for multiple subscriptions, with no prompt and no lost turn"
 platforms = ["macos", "linux"]
