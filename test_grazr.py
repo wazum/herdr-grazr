@@ -301,8 +301,8 @@ class SecurityRunnerTest(unittest.TestCase):
             claude._run_security("add-generic-password -X deadbeef", spawn=fake_subprocess)
 
     def test_every_keychain_call_is_bounded(self):
-        """A blocked keychain prompt would otherwise hang the hook forever, and
-        a hold past the stale age lets Claude break grazr's lock underneath it."""
+        """A blocked keychain would hang the hook, and holding past the stale
+        age lets Claude break grazr's lock underneath it."""
         seen = {}
 
         def fake_subprocess(argv, **kwargs):
@@ -432,8 +432,8 @@ class ReadLimitsTest(unittest.TestCase):
         self.assertNotEqual(claude.read_limits(healthy, now=NOW), "locked")
 
     def test_unexpected_types_anywhere_in_the_usage_block_are_unknown(self):
-        """The hook runs on every turn end of every pane. Any shape Claude did
-        not have last release must degrade to "stay", never raise."""
+        """This runs on every turn end of every pane, so an unfamiliar shape has
+        to degrade rather than raise."""
         cases = {
             "fetchedAtMs is a string": {"fetchedAtMs": "soon"},
             "fetchedAtMs is null": {"fetchedAtMs": None},
@@ -449,8 +449,7 @@ class ReadLimitsTest(unittest.TestCase):
                 self.assertEqual(claude.read_limits(config, now=NOW), "unknown")
 
     def test_a_reset_time_without_a_timezone_is_still_comparable(self):
-        """Claude sends +00:00 today. A bare timestamp must not poison every
-        later comparison against an aware `now`."""
+        """Claude sends +00:00 today, so this is defensive rather than observed."""
         naive = config_json(
             limits=[
                 {
@@ -538,8 +537,8 @@ class OAuthAccountMergeTest(unittest.TestCase):
             return json.load(handle)
 
     def test_a_config_lock_held_by_claude_blocks_the_merge(self):
-        """Claude's saveConfigWithLock re-reads and merges under
-        <config>.lock. Writing without it lets Claude's merge revert us."""
+        """Claude's saveConfigWithLock merges under this lock, so writing
+        without it lets Claude's merge revert us."""
         os.mkdir(self.path + ".lock")
 
         with self.assertRaises(RuntimeError):
@@ -740,8 +739,8 @@ class RotateTest(unittest.TestCase):
         )
 
     def test_rotating_away_from_an_unenrolled_account_still_completes(self):
-        """You can be logged into an account grazr never enrolled. The swap
-        works, so it must be reported, not lost to a traceback afterwards."""
+        """You can be logged into an account grazr never enrolled, and the swap
+        still works, so it must not be lost to a traceback afterwards."""
         os.unlink(os.path.join(self.accounts_dir, "uuid-work.json"))
 
         self.run_rotate()
@@ -1112,8 +1111,7 @@ class NotifyTest(unittest.TestCase):
 
         self.assertTrue(shown)
         self.assertEqual(argv[:3], ["/usr/bin/herdr", "notification", "show"])
-        # A swap changes which subscription you are spending and drops Remote
-        # Control. That is worth hearing, not just seeing for three seconds.
+        # A swap changes which subscription you spend and drops Remote Control.
         self.assertEqual(argv[argv.index("--sound") + 1], "request")
 
     def test_a_suppressed_toast_reports_failure(self):

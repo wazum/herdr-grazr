@@ -75,12 +75,15 @@ position = "bottom-right"
 Then `herdr server reload-config`. Choose `terminal` instead of `herdr` if you
 work over SSH, or `system` for macOS Notification Centre.
 
-Two things to expect. Herdr suppresses a toast while another is already on
-screen, so a swap during a busy moment can be dropped; grazr notices that and
-announces again next time rather than assuming you saw it. And the visible
-duration is fixed by Herdr at 5 or 8 seconds depending on the notification
-kind, with no setting for it. grazr asks for the 8-second kind, which also
-plays a sound. Set `HERDR_DISABLE_SOUND=1` to keep the longer read without it.
+Two things to expect. An in-app toast from a plugin lasts about three seconds
+and there is no setting for it, so grazr keeps the text to one short line and
+plays a sound. Choose `system` or `terminal` delivery if you would rather read
+it at your own pace. Set `HERDR_DISABLE_SOUND=1` for silence.
+
+Herdr also drops a toast while another one is already on screen. For the
+"nothing left" and "account restricted" notices grazr notices that and
+announces again next time rather than assuming you saw it. A rotation is
+announced once, so if it is dropped the swap is still in `herdr plugin log`.
 
 ### Remote Control
 

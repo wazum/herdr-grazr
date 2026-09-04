@@ -26,23 +26,20 @@ USAGE_STALE_AFTER_MS = 3_600_000
 # proper-lockfile options Claude uses for .oauth_refresh.lock in the same binary.
 OAUTH_LOCK_STALE_MS = 60_000
 
-# Claude's saveConfigWithLock guards ~/.claude.json with <config path>.lock,
-# built at runtime. Its stale age is not published, so this matches the other.
+# Claude's saveConfigWithLock builds this path at runtime, which is why the
+# name is not greppable. Its stale age is unpublished, so this matches the other.
 CONFIG_LOCK_STALE_MS = 60_000
 
-# Comfortably inside the lock stale ages: a keychain call that hangs longer
-# would let Claude judge grazr's lock abandoned while grazr still holds it.
+# Well inside the lock stale ages: hanging longer would let Claude judge
+# grazr's lock abandoned while grazr still holds it.
 SECURITY_TIMEOUT_SECONDS = 20
 
 
 @contextlib.contextmanager
 def _proper_lock(path, stale_ms, busy_message):
-    """Claude locks with proper-lockfile, which acquires by mkdir and treats a
-    holder older than its stale age as abandoned. grazr does the same so the two
-    exclude each other.
-
-    Release only removes a lock still carrying the mtime we created it with. If
-    ours went stale and Claude replaced it, that lock is Claude's to free.
+    """Mirrors proper-lockfile, so grazr and Claude exclude each other: acquire
+    by mkdir, treat a holder past its stale age as abandoned, and on release
+    leave behind any lock whose mtime changed, since that one is Claude's.
     """
     try:
         os.mkdir(path)
@@ -103,9 +100,8 @@ def read_limits(config, now):
     if not active or usage.get("accountUuid") != active:
         return "unknown"
 
-    # Everything below is Claude's shape, which can change in any release. One
-    # guard, because the hook runs on every turn end of every pane and a
-    # traceback there is worse than doing nothing.
+    # One broad guard: this is Claude's shape, it can change in any release, and
+    # a traceback on every turn end of every pane is worse than doing nothing.
     try:
         fetched_at = usage["fetchedAtMs"]
         if not isinstance(fetched_at, (int, float)) or isinstance(fetched_at, bool):
@@ -146,8 +142,8 @@ def _is_locked(utilization):
 
 
 def _parse_time(value):
-    """Always timezone-aware. A bare timestamp compared against an aware `now`
-    raises, and that comparison happens deep inside the decision."""
+    """A bare timestamp would raise when compared against an aware `now`, deep
+    inside the decision."""
     if not value:
         return None
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -323,9 +319,8 @@ def _load_account(paths, account_id):
 
 
 def _record_snapshot(paths, account_id, snapshot):
-    """Remember what the outgoing account had left. The swap has already
-    happened by now, so an account we never enrolled is nothing to record
-    against, not a reason to fail."""
+    """Best-effort: the swap has already happened, so an account we never
+    enrolled is nothing to record against rather than a reason to fail."""
     try:
         account = _load_account(paths, account_id)
     except (OSError, ValueError):
@@ -358,8 +353,8 @@ def _write_oauth_account(config_path, oauth_account):
         "Claude is writing its config; not swapping now",
     )
     with lock:
-        # Read inside the lock: Claude re-reads and merges under it too, so a
-        # copy taken earlier could already be out of date.
+        # Claude re-reads and merges under this lock too, so an earlier copy
+        # could already be out of date.
         with open(config_path) as handle:
             config = json.load(handle)
         config["oauthAccount"] = oauth_account
