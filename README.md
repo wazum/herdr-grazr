@@ -5,7 +5,7 @@
   </picture>
 </p>
 <h1 align="center">grazr</h1>
-<p align="center">Rotational grazing for Claude Code: moves the herd to a fresh account before the pasture runs out.<br>A <a href="https://herdr.dev">Herdr</a> plugin.</p>
+<p align="center">Rotational grazing for <a href="https://claude.com/claude-code">Claude Code</a>: moves the herd to a fresh account before the pasture runs out.<br>A <a href="https://herdr.dev">Herdr</a> plugin.</p>
 <br>
 
 <p align="center">
