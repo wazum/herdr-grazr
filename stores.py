@@ -5,10 +5,15 @@ moved is each store's own business.
 """
 
 import hashlib
+import os
+import platform
 import re
 import shlex
 import subprocess
+import tempfile
 import unicodedata
+
+IS_MAC = platform.system() == "Darwin"
 
 SERVICE = "Claude Code-credentials"
 
@@ -23,6 +28,79 @@ SECURITY_TIMEOUT_SECONDS = 15
 # errSecItemNotFound. Any other non-zero exit means the keychain itself was
 # unhappy, which is not the same as the item being absent.
 ITEM_NOT_FOUND = 44
+
+
+class FileStore:
+    """Linux has no keychain: Claude keeps the live credential in a file only
+    the owner can read, and grazr parks copies with the same protection."""
+
+    def __init__(self, live_path, parked_dir):
+        self.live_path = live_path
+        self.parked_dir = parked_dir
+
+    def read_live(self):
+        return self._read(self.live_path)
+
+    def write_live(self, blob):
+        self._write(self.live_path, blob)
+
+    def read_parked(self, account_id):
+        return self._read(self._parked_path(account_id))
+
+    def write_parked(self, account_id, blob):
+        os.makedirs(self.parked_dir, mode=0o700, exist_ok=True)
+        self._write(self._parked_path(account_id), blob)
+
+    def read_isolated(self, config_dir):
+        return self._read(self._isolated_path(config_dir))
+
+    def discard_isolated(self, config_dir):
+        """Never raises: the caller runs in a finally."""
+        try:
+            os.unlink(self._isolated_path(config_dir))
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return False
+        return True
+
+    def _parked_path(self, account_id):
+        return os.path.join(self.parked_dir, account_id + ".json")
+
+    def _isolated_path(self, config_dir):
+        return os.path.join(config_dir, ".credentials.json")
+
+    def _read(self, path):
+        try:
+            with open(path) as handle:
+                return handle.read()
+        except FileNotFoundError:
+            return None
+
+    def _write(self, path, blob):
+        """One atomic replace: Claude re-reads this file on every request and
+        must never see it half-written."""
+        directory = os.path.dirname(path) or "."
+        handle, temporary = tempfile.mkstemp(dir=directory, prefix=".grazr-")
+        try:
+            with os.fdopen(handle, "w") as writer:
+                writer.write(blob)
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, path)
+        except BaseException:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+            raise
+
+
+def default_store(isolated, config_dir, state_dir, keychain_account):
+    """The store the running platform's Claude actually reads."""
+    if IS_MAC:
+        return KeychainStore(service_name(isolated), keychain_account)
+    return FileStore(
+        os.path.join(config_dir, ".credentials.json"),
+        os.path.join(state_dir, "credentials"),
+    )
 
 
 def service_name(config_dir=None):
@@ -57,9 +135,8 @@ class KeychainStore:
         return self._read(service_name(config_dir))
 
     def discard_isolated(self, config_dir):
-        """Returns whether the item is gone, and never raises: the caller runs
-        in a finally, and masking the failure it is cleaning up after would
-        hide the real problem."""
+        """Never raises: the caller runs in a finally, and masking the failure
+        it is cleaning up after would hide the real problem."""
         try:
             completed = self._spawn(
                 [
@@ -81,9 +158,8 @@ class KeychainStore:
         return "grazr-%s" % account_id
 
     def _read(self, service):
-        """The stored blob, or None when there is no such item. Service and
-        account are not secrets, so argv is fine here; the blob comes back on
-        stdout."""
+        """Service and account are not secrets, so argv is fine here; the blob
+        comes back on stdout."""
         try:
             completed = self._spawn(
                 ["security", "find-generic-password", "-s", service, "-a", self.keychain_account, "-w"],
@@ -131,10 +207,9 @@ class KeychainStore:
         except subprocess.TimeoutExpired:
             raise RuntimeError("the keychain did not answer within %ds" % SECURITY_TIMEOUT_SECONDS)
         if completed.returncode != 0:
-            # security echoes the tail of the blob on a truncated line, and this
-            # message reaches the plugin log.
-            # Scrub before trimming, or the cut can leave a hex fragment too
-            # short to match.
+            # security echoes the tail of the blob in its error and the message
+            # reaches the plugin log. Scrub before trimming, or the cut can
+            # leave a hex fragment too short to match.
             scrubbed = re.sub(r"[0-9a-f]{8,}", "<hex>", completed.stderr.strip())[:200]
             raise RuntimeError("security refused the command: %s" % scrubbed)
         return completed.stdout

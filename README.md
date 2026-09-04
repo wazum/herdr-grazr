@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/wazum/herdr-grazr/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/wazum/herdr-grazr/ci.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI&labelColor=24273a" alt="CI"></a>
-  <a href="https://www.apple.com/macos"><img src="https://img.shields.io/badge/macOS-only-ffb997?style=for-the-badge&logo=apple&logoColor=white&labelColor=24273a" alt="macOS only"></a>
+  <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-ffb997?style=for-the-badge&labelColor=24273a" alt="macOS and Linux">
   <a href="https://www.python.org"><img src="https://img.shields.io/badge/Python-3.9%2B-c3b1e1?style=for-the-badge&logo=python&logoColor=white&labelColor=24273a" alt="Python 3.9 or newer"></a>
   <a href="https://herdr.dev"><img src="https://img.shields.io/badge/Herdr-0.8.0%2B-b5ead7?style=for-the-badge&labelColor=24273a" alt="Herdr 0.8.0 or newer"></a>
   <img src="https://img.shields.io/badge/dependencies-none-ffdac1?style=for-the-badge&labelColor=24273a" alt="no dependencies">
@@ -29,18 +29,20 @@ above carry the rest.
 ## How it works
 
 <img width="880" src="docs/how-grazr-works.svg"
-     alt="Flowchart of grazr's response when a Claude pane finishes a turn: it reads Claude's cached usage, stays put unless that usage is both trustworthy and nearly spent, and otherwise swaps the stored keychain credential to a fresh account, which Claude picks up within its thirty-second cache.">
+     alt="Flowchart of grazr's response when a Claude pane finishes a turn: it reads Claude's cached usage, stays put unless that usage is both trustworthy and nearly spent, and otherwise swaps the stored credential to a fresh account, which Claude picks up within its thirty-second cache.">
 
 You log in to each account once, with Claude's own `claude auth login`. *grazr*
 never sees a password and never mints a token. It copies the credential that a
-normal login already produced into its own keychain item, then copies it back
-when that account's turn comes. The `claude` binary is unmodified, and it
+normal login already produced into a parked copy of its own, then copies it
+back when that account's turn comes. The `claude` binary is unmodified, and it
 re-reads its credential every 30 seconds. That is what makes the swap
 invisible.
 
-*grazr* writes no secrets to disk. Parked credentials stay in the macOS keychain,
-and the files in the state directory hold only names, identities and the last
-known headroom.
+*grazr* keeps parked credentials where Claude keeps the live one. On macOS that
+is the keychain, and no secret ever touches the disk. On Linux there is no
+keychain: Claude's own login is a file only you can read, and a parked
+credential is stored the same way, in the state directory. The other state
+files hold only names, identities and the last known headroom.
 
 ## Install
 

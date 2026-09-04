@@ -401,6 +401,79 @@ class KeychainStoreTest(unittest.TestCase):
         self.assertIs(self.store(exploding_spawn).discard_isolated("/tmp/grazr-x"), False)
 
 
+class FileStoreTest(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.directory, True)
+        self.live_path = os.path.join(self.directory, ".credentials.json")
+        self.parked_dir = os.path.join(self.directory, "credentials")
+        self.store = stores.FileStore(self.live_path, self.parked_dir)
+
+    def test_read_live_returns_the_file_content(self):
+        with open(self.live_path, "w") as handle:
+            handle.write('{"claudeAiOauth":{}}')
+
+        self.assertEqual(self.store.read_live(), '{"claudeAiOauth":{}}')
+
+    def test_a_missing_live_file_is_none_rather_than_an_error(self):
+        self.assertIsNone(self.store.read_live())
+
+    def test_write_live_replaces_the_file_owner_readable_only(self):
+        with open(self.live_path, "w") as handle:
+            handle.write("OLD")
+
+        self.store.write_live("NEW")
+
+        self.assertEqual(self.store.read_live(), "NEW")
+        self.assertEqual(os.stat(self.live_path).st_mode & 0o777, 0o600)
+
+    def test_a_write_leaves_no_debris_beside_the_credentials(self):
+        """Claude re-reads its credentials file on every request, so the swap
+        has to be one atomic replace and nothing else in the directory."""
+        before = set(os.listdir(self.directory))
+        with open(self.live_path, "w"):
+            before.add(".credentials.json")
+
+        self.store.write_live("NEW")
+
+        self.assertEqual(set(os.listdir(self.directory)), before)
+
+    def test_a_parked_credential_survives_a_round_trip_owner_readable_only(self):
+        self.store.write_parked("uuid-work", "BLOB-WORK")
+
+        self.assertEqual(self.store.read_parked("uuid-work"), "BLOB-WORK")
+        self.assertIsNone(self.store.read_parked("uuid-personal"))
+        stored = os.path.join(self.parked_dir, "uuid-work.json")
+        self.assertEqual(os.stat(stored).st_mode & 0o777, 0o600)
+        self.assertEqual(os.stat(self.parked_dir).st_mode & 0o777, 0o700)
+
+    def test_read_isolated_reads_the_directory_s_own_credentials_file(self):
+        isolated = os.path.join(self.directory, "enrol-tmp")
+        os.mkdir(isolated)
+        with open(os.path.join(isolated, ".credentials.json"), "w") as handle:
+            handle.write("ISOLATED")
+
+        self.assertEqual(self.store.read_isolated(isolated), "ISOLATED")
+
+    def test_discard_isolated_reports_whether_the_credential_is_gone(self):
+        """Missing counts as gone; an unremovable file does not, and never
+        raises: the caller runs in a finally."""
+        isolated = os.path.join(self.directory, "enrol-tmp")
+        os.mkdir(isolated)
+
+        self.assertTrue(self.store.discard_isolated(isolated), "nothing to delete is gone")
+
+        with open(os.path.join(isolated, ".credentials.json"), "w") as handle:
+            handle.write("ISOLATED")
+        self.assertTrue(self.store.discard_isolated(isolated))
+        self.assertEqual(os.listdir(isolated), [])
+
+        with mock.patch.object(os, "unlink", side_effect=OSError("read-only fs")):
+            with open(os.path.join(isolated, ".credentials.json"), "w") as handle:
+                handle.write("ISOLATED")
+            self.assertFalse(self.store.discard_isolated(isolated))
+
+
 class HasParkedCredentialTest(unittest.TestCase):
     """An account whose parked credential went missing cannot be rotated to,
     and the only way to find out is to ask the store."""
@@ -1453,24 +1526,45 @@ class PathResolutionTest(unittest.TestCase):
         self.directory = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.directory, True)
 
+    def paths_on(self, mac, environment):
+        with mock.patch.object(stores, "IS_MAC", mac), mock.patch.dict(
+            os.environ, environment
+        ):
+            if "CLAUDE_CONFIG_DIR" not in environment:
+                os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            return grazr._paths()
+
     def test_an_isolated_config_dir_gets_its_own_keychain_item(self):
         """Writing the identity to an isolated config while swapping the
         default keychain item would break both logins at once."""
         isolated = os.path.join(self.directory, "isolated")
-        with mock.patch.dict(
-            os.environ, {"CLAUDE_CONFIG_DIR": isolated, "HERDR_PLUGIN_STATE_DIR": self.directory}
-        ):
-            _, store, _ = grazr._paths()
+        _, store, _ = self.paths_on(
+            True, {"CLAUDE_CONFIG_DIR": isolated, "HERDR_PLUGIN_STATE_DIR": self.directory}
+        )
 
         self.assertEqual(store.service, stores.service_name(isolated))
         self.assertNotEqual(store.service, stores.SERVICE)
 
     def test_the_ordinary_login_uses_the_unnamespaced_keychain_item(self):
-        with mock.patch.dict(os.environ, {"HERDR_PLUGIN_STATE_DIR": self.directory}):
-            os.environ.pop("CLAUDE_CONFIG_DIR", None)
-            _, store, _ = grazr._paths()
+        _, store, _ = self.paths_on(True, {"HERDR_PLUGIN_STATE_DIR": self.directory})
 
         self.assertEqual(store.service, stores.SERVICE)
+
+    def test_off_mac_the_store_is_claude_s_own_credentials_file(self):
+        _, store, _ = self.paths_on(False, {"HERDR_PLUGIN_STATE_DIR": self.directory})
+
+        self.assertEqual(
+            store.live_path, os.path.expanduser("~/.claude/.credentials.json")
+        )
+        self.assertEqual(store.parked_dir, os.path.join(self.directory, "credentials"))
+
+    def test_off_mac_an_isolated_config_dir_keeps_its_own_credentials_file(self):
+        isolated = os.path.join(self.directory, "isolated")
+        _, store, _ = self.paths_on(
+            False, {"CLAUDE_CONFIG_DIR": isolated, "HERDR_PLUGIN_STATE_DIR": self.directory}
+        )
+
+        self.assertEqual(store.live_path, os.path.join(isolated, ".credentials.json"))
 
     def test_an_isolated_config_dir_keeps_its_own_claude_json(self):
         """`CLAUDE_CONFIG_DIR=x claude` writes x/.claude.json, not ~/.claude.json."""

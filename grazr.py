@@ -302,7 +302,7 @@ def _paths():
             config_dir=config_dir,
             accounts_dir=accounts_dir,
         ),
-        stores.KeychainStore(stores.service_name(isolated), getpass.getuser()),
+        stores.default_store(isolated, config_dir, state_dir, getpass.getuser()),
         state_dir,
     )
 

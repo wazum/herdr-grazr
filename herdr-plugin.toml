@@ -3,7 +3,7 @@ name = "grazr"
 version = "0.1.0"
 min_herdr_version = "0.8.0"
 description = "Rotate to a fresh Claude account before the current one runs out"
-platforms = ["macos"]
+platforms = ["macos", "linux"]
 
 [[events]]
 on = "pane.agent_status_changed"

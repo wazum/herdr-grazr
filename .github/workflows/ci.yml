@@ -8,9 +8,9 @@ on:
 
 jobs:
   test:
-    # macOS is the supported platform; Linux runs the same suite because it is
-    # hermetic (no keychain, no network, no `claude`), so a Linux failure means
-    # a real portability bug rather than a missing dependency.
+    # The suite is hermetic (no keychain, no network, no `claude`), so it runs
+    # the same on both platforms and a failure on either OS is a real bug
+    # rather than a missing dependency.
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -95,7 +95,7 @@ jobs:
           for key in ("id", "name", "version", "description", "platforms"):
               assert manifest.get(key), "herdr-plugin.toml is missing %s" % key
 
-          assert manifest["platforms"] == ["macos"], manifest["platforms"]
+          assert manifest["platforms"] == ["macos", "linux"], manifest["platforms"]
           assert [event["on"] for event in manifest["events"]] == [
               "pane.agent_status_changed"
           ]
