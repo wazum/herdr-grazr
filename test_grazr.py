@@ -327,6 +327,21 @@ class SecurityRunnerTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             claude._read_credential("svc", "acct", spawn=fake_subprocess)
 
+    def test_hex_cut_short_by_the_length_cap_is_still_scrubbed(self):
+        """A hex tail left too short to match puts part of a credential in the
+        log."""
+        # Positioned so the cap cuts the hex run below the match length.
+        prefix = "security: unknown command "
+        leaked = prefix + "?" * (192 - len(prefix)) + "8" * 40
+
+        def fake_subprocess(argv, **kwargs):
+            return SimpleNamespace(returncode=1, stdout="", stderr=leaked)
+
+        with self.assertRaises(RuntimeError) as raised:
+            claude._run_security("add-generic-password -X ab", spawn=fake_subprocess)
+
+        self.assertNotIn("88888888", str(raised.exception))
+
     def test_the_failure_message_carries_no_credential_hex(self):
         """On the truncation path security echoes the tail of the blob as its
         error. That message reaches the plugin log, so it must not be repeated."""

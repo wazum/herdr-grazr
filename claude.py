@@ -92,7 +92,9 @@ def _run_security(line, spawn=subprocess.run):
     if completed.returncode != 0:
         # security echoes the tail of the blob on a truncated line, and this
         # message reaches the plugin log.
-        scrubbed = re.sub(r"[0-9a-f]{16,}", "<hex>", completed.stderr.strip()[:200])
+        # Scrub before trimming, or the cut can leave a hex fragment too short
+        # to match.
+        scrubbed = re.sub(r"[0-9a-f]{8,}", "<hex>", completed.stderr.strip())[:200]
         raise RuntimeError("security refused the command: %s" % scrubbed)
     return completed.stdout
 
