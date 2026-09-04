@@ -1409,6 +1409,19 @@ class InteractiveExitTest(unittest.TestCase):
                 self.assertEqual(code, 130)
                 self.assertIn("cancelled", out.getvalue())
 
+    def test_a_refusal_is_one_line_rather_than_a_traceback(self):
+        """A locked keychain or a busy lock is an expected refusal, and the
+        message names the cause. A traceback in a pane names it too, but buries
+        it under a stack nobody can act on."""
+        refusal = RuntimeError("the keychain refused to read the credential: locked")
+        with mock.patch.object(grazr, "status", side_effect=refusal), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            code = grazr.main(["grazr.py", "status"])
+
+        self.assertEqual(code, 1)
+        self.assertIn("keychain refused", out.getvalue())
+        self.assertNotIn("Traceback", out.getvalue())
+
     def test_the_menu_says_how_to_leave(self):
         with mock.patch.object(grazr, "read_key", lambda: "q"), \
                 mock.patch.object(grazr, "_paths", side_effect=AssertionError):
