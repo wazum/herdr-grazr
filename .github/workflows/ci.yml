@@ -29,6 +29,52 @@ jobs:
       - name: Tests
         run: python3 test_grazr.py
 
+  clock:
+    # A fixture stamped with a fixed time, read by code that calls the real
+    # clock, passes until the two drift apart. That shipped once already.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: The suite gives the same answer whatever the clock says
+        run: |
+          python3 - <<'PY'
+          import datetime, sys, unittest
+
+          real = datetime.datetime
+          failures = []
+          for label, seconds in [
+              ("a week ago", -604800),
+              ("13 hours back", -46800),
+              ("11 hours on", 39600),
+              ("3 days on", 259200),
+          ]:
+              shift = datetime.timedelta(seconds=seconds)
+
+              class Shifted(real):
+                  @classmethod
+                  def now(cls, tz=None, _shift=shift):
+                      return real.now(tz) + _shift
+
+              datetime.datetime = Shifted
+              for name in [n for n in list(sys.modules) if n in ("test_grazr", "grazr", "claude", "core")]:
+                  del sys.modules[name]
+              import test_grazr
+
+              suite = unittest.defaultTestLoader.loadTestsFromModule(test_grazr)
+              result = unittest.TextTestRunner(verbosity=0).run(suite)
+              print("%-16s %s" % (label, "ok" if result.wasSuccessful() else "FAILED"))
+              if not result.wasSuccessful():
+                  failures.append(label)
+              datetime.datetime = real
+
+          sys.exit(1 if failures else 0)
+          PY
+
   manifest:
     runs-on: ubuntu-latest
     steps:
