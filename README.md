@@ -31,6 +31,13 @@ because from where you sit, nothing did.
 **Requires** two or more Claude subscriptions that are all yours. The badges
 above carry the rest.
 
+[How it works](#how-it-works) ·
+[Install](#install) ·
+[Swap on demand](#swap-on-demand) ·
+[After a swap](#after-a-swap) ·
+[What it will not do](#what-it-will-not-do) ·
+[Policy](#policy)
+
 ## How it works
 
 <img width="880" src="docs/how-grazr-works.svg"
