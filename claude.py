@@ -4,6 +4,7 @@ import os
 import shutil
 import tempfile
 import time
+import urllib.request
 import uuid
 from collections import namedtuple
 from datetime import datetime, timezone
@@ -19,6 +20,12 @@ OAUTH_LOCK_STALE_MS = 60_000
 # Claude's saveConfigWithLock builds this path at runtime, so the name is not
 # greppable. Its stale age is unpublished, so this matches the other lock.
 CONFIG_LOCK_STALE_MS = 60_000
+
+# What Claude's own fetchUtilization calls, with the headers and the 5s budget
+# it uses. The body it gets back is what it caches verbatim as `utilization`.
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+USAGE_BETA = "oauth-2025-04-20"
+USAGE_TIMEOUT_SECONDS = 5
 
 
 @contextlib.contextmanager
@@ -96,28 +103,67 @@ def read_limits(config, now):
             return "unknown"
         if now.timestamp() * 1000 - fetched_at > USAGE_STALE_AFTER_MS:
             return "unknown"
-
-        utilization = usage.get("utilization")
-        if not isinstance(utilization, dict):
-            return "unknown"
-        if _is_locked(utilization):
-            return "locked"
-
-        entries = utilization.get("limits")
-        if not isinstance(entries, list) or not entries:
-            return "unknown"
-        return [
-            core.Limit(
-                kind=entry["kind"],
-                scope=entry.get("scope"),
-                group=entry["group"],
-                remaining=100 - entry["percent"],
-                resets_at=_parse_time(entry.get("resets_at")),
-            )
-            for entry in entries
-        ]
+        return read_utilization(usage.get("utilization"))
     except (AttributeError, KeyError, TypeError, ValueError):
         return "unknown"
+
+
+def read_utilization(utilization):
+    """The body Claude fetches and then caches verbatim, so the same reading
+    serves whether it came off disk or off the wire."""
+    if not isinstance(utilization, dict):
+        return "unknown"
+    if _is_locked(utilization):
+        return "locked"
+
+    entries = utilization.get("limits")
+    if not isinstance(entries, list) or not entries:
+        return "unknown"
+    return [
+        core.Limit(
+            kind=entry["kind"],
+            scope=entry.get("scope"),
+            group=entry["group"],
+            remaining=100 - entry["percent"],
+            resets_at=_parse_time(entry.get("resets_at")),
+        )
+        for entry in entries
+    ]
+
+
+def fetch_limits(store, opener=urllib.request.urlopen):
+    """Ask the endpoint Claude asks, because its cache can sit unrefreshed for
+    over an hour while a window is spent, and a reading that old is no reading
+    at all. Returns None for "could not tell", which leaves the caller on
+    whatever the cache said rather than stopping a turn end over it.
+
+    Read-only: grazr spends the access token it already parks and never
+    refreshes it. A 401 means Claude will refresh on its own next request.
+    """
+    blob = store.read_live()
+    if blob is None:
+        return None
+    try:
+        token = json.loads(blob)["claudeAiOauth"]["accessToken"]
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    request = urllib.request.Request(
+        USAGE_URL,
+        headers={
+            "Authorization": "Bearer %s" % token,
+            "anthropic-beta": USAGE_BETA,
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with opener(request, timeout=USAGE_TIMEOUT_SECONDS) as response:
+            payload = json.load(response)
+    except (OSError, ValueError):
+        # No network, an expired token, a rate limit, a body that is not JSON.
+        return None
+    reading = read_utilization(payload)
+    return None if reading == "unknown" else reading
 
 
 def _is_locked(utilization):

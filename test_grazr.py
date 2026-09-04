@@ -818,6 +818,76 @@ class ReadLimitsTest(unittest.TestCase):
                 self.assertEqual(claude.read_limits(config, now=NOW), "unknown")
 
 
+class FetchLimitsTest(unittest.TestCase):
+    """Claude's cached usage can sit unrefreshed for over an hour while a
+    window is spent, so grazr asks the same endpoint Claude asks, using the
+    credential it already parks."""
+
+    TOKEN = json.dumps({"claudeAiOauth": {"accessToken": "tok-123"}})
+
+    def opener(self, payload, recorded=None):
+        def fake_open(request, timeout=None):
+            if recorded is not None:
+                recorded["url"] = request.full_url
+                recorded["headers"] = {k.lower(): v for k, v in request.headers.items()}
+                recorded["timeout"] = timeout
+            return io.BytesIO(json.dumps(payload).encode())
+
+        return fake_open
+
+    def test_it_asks_the_usage_endpoint_and_parses_what_comes_back(self):
+        recorded = {}
+        payload = {
+            "limits": [
+                {"kind": "session", "group": "session", "percent": 92, "resets_at": None}
+            ]
+        }
+
+        limits = claude.fetch_limits(
+            FakeStore(live=self.TOKEN), opener=self.opener(payload, recorded)
+        )
+
+        self.assertEqual([entry.remaining for entry in limits], [8])
+        self.assertEqual(recorded["url"], claude.USAGE_URL)
+        self.assertEqual(recorded["headers"]["authorization"], "Bearer tok-123")
+        self.assertEqual(recorded["headers"]["anthropic-beta"], claude.USAGE_BETA)
+        self.assertEqual(recorded["timeout"], claude.USAGE_TIMEOUT_SECONDS)
+
+    def test_the_token_never_travels_in_the_url(self):
+        recorded = {}
+
+        claude.fetch_limits(
+            FakeStore(live=self.TOKEN), opener=self.opener({"limits": []}, recorded)
+        )
+
+        self.assertNotIn("tok-123", recorded["url"])
+
+    def test_a_restriction_is_reported_the_same_as_from_the_cache(self):
+        payload = {"five_hour": {"locked_reason": "spend_cap"}, "limits": []}
+
+        limits = claude.fetch_limits(FakeStore(live=self.TOKEN), opener=self.opener(payload))
+
+        self.assertEqual(limits, "locked")
+
+    def test_anything_going_wrong_is_no_answer_rather_than_a_broken_hook(self):
+        """Runs on a turn end. No network, an expired token, a shape that
+        changed: every one of them means carry on with what the cache said."""
+        cases = {
+            "network": lambda request, timeout=None: (_ for _ in ()).throw(OSError("down")),
+            "not json": lambda request, timeout=None: io.BytesIO(b"<html>"),
+        }
+        for name, opener in cases.items():
+            with self.subTest(case=name):
+                self.assertIsNone(claude.fetch_limits(FakeStore(live=self.TOKEN), opener=opener))
+
+    def test_no_credential_and_no_token_both_mean_no_answer(self):
+        for blob in (None, "{}", "not json at all"):
+            with self.subTest(blob=blob):
+                self.assertIsNone(
+                    claude.fetch_limits(FakeStore(live=blob), opener=self.opener({}))
+                )
+
+
 class CredentialReadTest(unittest.TestCase):
     def read(self, spawn):
         return stores.KeychainStore("svc", "acct", spawn=spawn).read_live()
