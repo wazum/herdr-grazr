@@ -875,6 +875,14 @@ class FetchLimitsTest(unittest.TestCase):
         cases = {
             "network": lambda request, timeout=None: (_ for _ in ()).throw(OSError("down")),
             "not json": lambda request, timeout=None: io.BytesIO(b"<html>"),
+            "percent is a string": self.opener(
+                {"limits": [{"kind": "session", "group": "session", "percent": "92"}]}
+            ),
+            "resets_at is a number": self.opener(
+                {"limits": [{"kind": "session", "group": "session", "percent": 9, "resets_at": 5}]}
+            ),
+            "a field is missing": self.opener({"limits": [{"kind": "session", "percent": 9}]}),
+            "a limit is null": self.opener({"limits": [None]}),
         }
         for name, opener in cases.items():
             with self.subTest(case=name):

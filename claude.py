@@ -95,17 +95,12 @@ def read_limits(config, now):
     if not active or usage.get("accountUuid") != active:
         return "unknown"
 
-    # One broad guard. Claude's shape can change in any release, and a traceback
-    # on every turn end of every pane is worse than doing nothing.
-    try:
-        fetched_at = usage["fetchedAtMs"]
-        if not isinstance(fetched_at, (int, float)) or isinstance(fetched_at, bool):
-            return "unknown"
-        if now.timestamp() * 1000 - fetched_at > USAGE_STALE_AFTER_MS:
-            return "unknown"
-        return read_utilization(usage.get("utilization"))
-    except (AttributeError, KeyError, TypeError, ValueError):
+    fetched_at = usage.get("fetchedAtMs")
+    if not isinstance(fetched_at, (int, float)) or isinstance(fetched_at, bool):
         return "unknown"
+    if now.timestamp() * 1000 - fetched_at > USAGE_STALE_AFTER_MS:
+        return "unknown"
+    return read_utilization(usage.get("utilization"))
 
 
 def read_utilization(utilization):
@@ -119,16 +114,19 @@ def read_utilization(utilization):
     entries = utilization.get("limits")
     if not isinstance(entries, list) or not entries:
         return "unknown"
-    return [
-        core.Limit(
-            kind=entry["kind"],
-            scope=entry.get("scope"),
-            group=entry["group"],
-            remaining=100 - entry["percent"],
-            resets_at=_parse_time(entry.get("resets_at")),
-        )
-        for entry in entries
-    ]
+    try:
+        return [
+            core.Limit(
+                kind=entry["kind"],
+                scope=entry.get("scope"),
+                group=entry["group"],
+                remaining=100 - entry["percent"],
+                resets_at=_parse_time(entry.get("resets_at")),
+            )
+            for entry in entries
+        ]
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return "unknown"
 
 
 def fetch_limits(store, opener=urllib.request.urlopen):
