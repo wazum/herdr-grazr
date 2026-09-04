@@ -305,7 +305,10 @@ def rotate(paths, active_id, next_id, snapshot):
         raise RuntimeError("no parked credential for %s; enrol it again" % next_id)
     identity = _load_account(paths, next_id)["oauthAccount"]
 
-    with _oauth_refresh_lock(paths.config_dir):
+    # Both locks before the first write. The identity write comes last but its
+    # lock is contended like any other, and rejecting it after the keychain has
+    # already moved is the one thing this ordering exists to prevent.
+    with _config_lock(paths.config_path), _oauth_refresh_lock(paths.config_dir):
         leaving = _read_credential(SERVICE, paths.keychain_account)
         if leaving is None:
             raise RuntimeError("no live credential to park; refusing to swap")
@@ -316,8 +319,8 @@ def rotate(paths, active_id, next_id, snapshot):
         if leaving != arriving:
             _install_credential(_parked_service(active_id), paths.keychain_account, leaving)
             _install_credential(SERVICE, paths.keychain_account, arriving)
+        _merge_oauth_account(paths.config_path, identity)
 
-    _write_oauth_account(paths.config_path, identity)
     _record_snapshot(paths, active_id, snapshot)
 
 
@@ -370,29 +373,36 @@ def _write_oauth_account(config_path, oauth_account):
     """Point ~/.claude.json at another identity. Read-modify-write preserving
     every other key, then one atomic replace, because Claude watches this file
     rather than locking it."""
-    lock = _proper_lock(
+    with _config_lock(config_path):
+        _merge_oauth_account(config_path, oauth_account)
+
+
+def _config_lock(config_path):
+    return _proper_lock(
         config_path + ".lock",
         CONFIG_LOCK_STALE_MS,
         "Claude is writing its config; not swapping now",
     )
-    with lock:
-        # Claude re-reads and merges under this lock too, so an earlier copy
-        # could already be out of date.
-        with open(config_path) as handle:
-            config = json.load(handle)
-        config["oauthAccount"] = oauth_account
 
-        directory = os.path.dirname(config_path) or "."
-        handle, temporary = tempfile.mkstemp(dir=directory, prefix=".grazr-", suffix=".json")
-        try:
-            with os.fdopen(handle, "w") as writer:
-                json.dump(config, writer)
-            os.chmod(temporary, os.stat(config_path).st_mode & 0o777)
-            os.replace(temporary, config_path)
-        except BaseException:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
-            raise
+
+def _merge_oauth_account(config_path, oauth_account):
+    """Caller holds the config lock. Claude re-reads and merges under it too,
+    so a copy taken before acquiring it could already be out of date."""
+    with open(config_path) as handle:
+        config = json.load(handle)
+    config["oauthAccount"] = oauth_account
+
+    directory = os.path.dirname(config_path) or "."
+    handle, temporary = tempfile.mkstemp(dir=directory, prefix=".grazr-", suffix=".json")
+    try:
+        with os.fdopen(handle, "w") as writer:
+            json.dump(config, writer)
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, config_path)
+    except BaseException:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+        raise
 
 
 def _read_credential(service, account, spawn=subprocess.run):

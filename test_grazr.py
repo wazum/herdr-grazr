@@ -729,7 +729,7 @@ class RotateTest(unittest.TestCase):
         outgoing account's parked credential and lose it for good."""
         with mock.patch.object(claude, "_read_credential", self.fake_read), mock.patch.object(
             claude, "_install_credential", self.fake_install
-        ), mock.patch.object(claude, "_write_oauth_account", side_effect=OSError("disk full")):
+        ), mock.patch.object(claude, "_merge_oauth_account", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 claude.rotate(self.paths, "uuid-work", "uuid-personal", "locked")
 
@@ -752,6 +752,17 @@ class RotateTest(unittest.TestCase):
         self.assertEqual(self.keychain["Claude Code-credentials"], "PARKED-PERSONAL")
         with open(self.config_path) as handle:
             self.assertEqual(json.load(handle)["oauthAccount"]["accountUuid"], "uuid-personal")
+
+    def test_a_held_config_lock_aborts_before_any_keychain_write(self):
+        """The identity write is the last step but its lock is contended like
+        any other, so it has to be held before the first mutation, not after."""
+        os.mkdir(self.config_path + ".lock")
+
+        with self.assertRaises(RuntimeError):
+            self.run_rotate()
+
+        self.assertEqual(self.events, [])
+        self.assertEqual(self.keychain["Claude Code-credentials"], "LIVE-WORK")
 
     def test_a_lock_held_by_claude_aborts_before_any_write(self):
         os.mkdir(os.path.join(self.directory, ".oauth_refresh.lock"))
