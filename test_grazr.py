@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import time
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest import mock
 
@@ -1323,8 +1323,10 @@ class HookTest(unittest.TestCase):
         self.claude_dir = os.path.join(self.directory, "claude")
         for made in (self.state_dir, self.claude_dir, os.path.join(self.state_dir, "accounts")):
             os.makedirs(made)
-        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
-            json.dump(config_json(percent=99), handle)
+        # hook() reads the real clock, so this fixture must be fresh and its
+        # window must reset in the future relative to wall time. A fixed
+        # timestamp here quietly stops exercising rotation once it ages out.
+        self.write_usage(percent=99)
         for identifier, name in (("uuid-work", "work"), ("uuid-personal", "personal")):
             with open(os.path.join(self.state_dir, "accounts", identifier + ".json"), "w") as f:
                 json.dump({"name": name, "oauthAccount": {"accountUuid": identifier}}, f)
@@ -1334,6 +1336,25 @@ class HookTest(unittest.TestCase):
     def write_config(self, text):
         with open(os.path.join(self.state_dir, "config.env"), "w") as handle:
             handle.write(text)
+
+    def write_usage(self, percent):
+        wall_now = datetime.now(timezone.utc)
+        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
+            json.dump(
+                config_json(
+                    fetched_at=wall_now,
+                    limits=[
+                        {
+                            "kind": "session",
+                            "group": "session",
+                            "percent": percent,
+                            "resets_at": (wall_now + timedelta(hours=5)).isoformat(),
+                            "scope": None,
+                        }
+                    ],
+                ),
+                handle,
+            )
 
     def run_hook(self, status="idle", now=None):
         environment = {
@@ -1360,8 +1381,7 @@ class HookTest(unittest.TestCase):
     def test_a_healthy_account_never_reads_the_account_files(self):
         """This runs on every status change of every pane. Reading one JSON per
         enrolled account to conclude "stay" is work nobody asked for."""
-        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
-            json.dump(config_json(percent=10), handle)
+        self.write_usage(percent=10)
         reads = []
 
         with mock.patch.object(
