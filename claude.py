@@ -10,7 +10,7 @@ import tempfile
 import time
 import unicodedata
 from collections import namedtuple
-from datetime import datetime
+from datetime import datetime, timezone
 
 import core
 
@@ -65,20 +65,32 @@ def read_limits(config, now):
     describe an account we already left, or predate the last refresh."""
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware or the freshness guard fails open")
-    usage = config.get("cachedUsageUtilization") or {}
+    usage = config.get("cachedUsageUtilization")
+    if not isinstance(usage, dict):
+        return "unknown"
     active = (config.get("oauthAccount") or {}).get("accountUuid")
     if not active or usage.get("accountUuid") != active:
         return "unknown"
-    age_ms = now.timestamp() * 1000 - usage.get("fetchedAtMs", 0)
-    if age_ms > USAGE_STALE_AFTER_MS:
-        return "unknown"
-    utilization = usage.get("utilization") or {}
-    if _is_locked(utilization):
-        return "locked"
-    entries = utilization.get("limits") or []
-    if not entries:
-        return "unknown"
+
+    # Everything below is Claude's shape, which can change in any release. One
+    # guard, because the hook runs on every turn end of every pane and a
+    # traceback there is worse than doing nothing.
     try:
+        fetched_at = usage["fetchedAtMs"]
+        if not isinstance(fetched_at, (int, float)) or isinstance(fetched_at, bool):
+            return "unknown"
+        if now.timestamp() * 1000 - fetched_at > USAGE_STALE_AFTER_MS:
+            return "unknown"
+
+        utilization = usage.get("utilization")
+        if not isinstance(utilization, dict):
+            return "unknown"
+        if _is_locked(utilization):
+            return "locked"
+
+        entries = utilization.get("limits")
+        if not isinstance(entries, list) or not entries:
+            return "unknown"
         return [
             core.Limit(
                 kind=entry["kind"],
@@ -89,7 +101,7 @@ def read_limits(config, now):
             )
             for entry in entries
         ]
-    except (KeyError, TypeError, ValueError):
+    except (AttributeError, KeyError, TypeError, ValueError):
         return "unknown"
 
 
@@ -103,9 +115,12 @@ def _is_locked(utilization):
 
 
 def _parse_time(value):
+    """Always timezone-aware. A bare timestamp compared against an aware `now`
+    raises, and that comparison happens deep inside the decision."""
     if not value:
         return None
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 Paths = namedtuple("Paths", "config_path config_dir accounts_dir keychain_account")

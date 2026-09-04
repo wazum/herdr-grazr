@@ -406,6 +406,46 @@ class ReadLimitsTest(unittest.TestCase):
 
         self.assertNotEqual(claude.read_limits(healthy, now=NOW), "locked")
 
+    def test_unexpected_types_anywhere_in_the_usage_block_are_unknown(self):
+        """The hook runs on every turn end of every pane. Any shape Claude did
+        not have last release must degrade to "stay", never raise."""
+        cases = {
+            "fetchedAtMs is a string": {"fetchedAtMs": "soon"},
+            "fetchedAtMs is null": {"fetchedAtMs": None},
+            "utilization is a string": {"utilization": "nope"},
+            "utilization is a list": {"utilization": []},
+            "limits is a string": {"utilization": {"limits": "nope"}},
+            "a limit entry is a string": {"utilization": {"limits": ["nope"]}},
+        }
+        for label, override in cases.items():
+            with self.subTest(label=label):
+                config = config_json()
+                config["cachedUsageUtilization"].update(override)
+                self.assertEqual(claude.read_limits(config, now=NOW), "unknown")
+
+    def test_a_reset_time_without_a_timezone_is_still_comparable(self):
+        """Claude sends +00:00 today. A bare timestamp must not poison every
+        later comparison against an aware `now`."""
+        naive = config_json(
+            limits=[
+                {
+                    "kind": "session",
+                    "group": "session",
+                    "percent": 90,
+                    "resets_at": "2026-09-04T17:00:00.000000",
+                    "scope": None,
+                }
+            ]
+        )
+
+        limits = claude.read_limits(naive, now=NOW)
+
+        self.assertEqual(limits[0].resets_at, LATER)
+        self.assertEqual(
+            decide(limits, active="work", accounts=[], now=NOW, thresholds=THRESHOLDS),
+            "exhausted",
+        )
+
     def test_an_unrecognised_limit_shape_is_unknown_not_a_crash(self):
         """The hook runs on every idle event, so a Claude release that renames a
         field must degrade to "stay", not raise on every pane."""
