@@ -23,6 +23,11 @@ When a window is nearly spent, it swaps which stored credential the official
 `claude` binary reads. It does that between turns, so no pane is ever blocked
 or prompted.
 
+**You do nothing.** There is no command to run and no prompt to answer. A pane
+mid-task keeps going on the fresh account, and a pane you were not watching
+never shows that anything changed. You keep working as if nothing had happened,
+because from where you sit, nothing did.
+
 **Requires** two or more Claude subscriptions that are all yours. The badges
 above carry the rest.
 
@@ -107,6 +112,10 @@ instead of assuming you read it. A rotation is announced once, so a dropped
 toast still leaves the swap in `herdr plugin log`.
 
 ## After a swap
+
+<p align="center">
+  <img src="docs/rotation-toast.png" alt="grazr's toast after a rotation: now on personal" width="606">
+</p>
 
 *grazr* says which account it moved to, in a toast and in `herdr plugin log`. To
 see what is enrolled and what each account has left:
