@@ -4,20 +4,20 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.2.0 - 2026-09-04
 
 ### Added
 
-- A `swap` action, for a Herdr key of your choice, that moves to the first
-  account in `ACCOUNTS` with headroom without waiting for the threshold. It
-  honours `DRY_RUN` and ignores `ENABLED`, which gates the automatic path only.
-  When nothing is fit to take over, it says so in a toast with the earliest
-  reset time, since a key that appears to do nothing is worse than no key.
+- A `swap` action you can bind to a Herdr key. It moves you to the first
+  account in `ACCOUNTS` that still has room, without waiting for the
+  threshold. `DRY_RUN` still applies. `ENABLED` does not, because that flag
+  only turns off the automatic switch. If no other account has room, the key
+  shows a toast that says so and tells you when the first window opens again.
 
 ### Changed
 
-- Reset times in toasts and the log read as a local weekday and clock time,
-  such as "Fri 01:00", instead of a UTC timestamp with microseconds.
+- Reset times in toasts and in the log are shown as a local weekday and time,
+  like "Fri 01:00", instead of a UTC timestamp.
 
 ## 0.1.1 - 2026-09-04
 
