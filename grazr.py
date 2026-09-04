@@ -475,9 +475,13 @@ def enrol():
     # in the keychain under a service name nothing tracks.
     try:
         print("\nlogging in with an isolated config dir; your current login is untouched.\n")
-        login = subprocess.run(
-            ["claude", "auth", "login"], env=dict(os.environ, CLAUDE_CONFIG_DIR=source)
-        )
+        try:
+            login = subprocess.run(
+                ["claude", "auth", "login"], env=dict(os.environ, CLAUDE_CONFIG_DIR=source)
+            )
+        except FileNotFoundError:
+            print("claude is not on this pane's PATH, so it cannot log you in")
+            return 1
         if login.returncode != 0:
             print("login did not complete")
             return 1

@@ -1443,6 +1443,28 @@ class InteractiveExitTest(unittest.TestCase):
         self.assertIn("keychain refused", out.getvalue())
         self.assertNotIn("Traceback", out.getvalue())
 
+    def test_a_missing_claude_cli_is_a_message_not_a_traceback(self):
+        """Authentication is always Claude's own command, and a pane launched
+        from a desktop session may not have it on PATH at all."""
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        paths = claude.Paths(
+            config_path=os.path.join(directory, ".claude.json"),
+            config_dir=directory,
+            accounts_dir=os.path.join(directory, "accounts"),
+        )
+        os.mkdir(paths.accounts_dir)
+
+        with mock.patch.object(grazr, "read_key", lambda: "l"), \
+                mock.patch.object(grazr, "_paths", lambda: (paths, FakeStore(), directory)), \
+                mock.patch.object(subprocess, "run", side_effect=FileNotFoundError("claude")), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            code = grazr.enrol()
+
+        self.assertEqual(code, 1)
+        self.assertIn("claude", out.getvalue())
+        self.assertIn("PATH", out.getvalue())
+
     def test_the_menu_says_how_to_leave(self):
         with mock.patch.object(grazr, "read_key", lambda: "q"), \
                 mock.patch.object(grazr, "_paths", side_effect=AssertionError):
