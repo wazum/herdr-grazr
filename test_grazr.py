@@ -512,6 +512,32 @@ class OAuthAccountMergeTest(unittest.TestCase):
         with open(self.path) as handle:
             return json.load(handle)
 
+    def test_a_config_lock_held_by_claude_blocks_the_merge(self):
+        """Claude's saveConfigWithLock re-reads and merges under
+        <config>.lock. Writing without it lets Claude's merge revert us."""
+        os.mkdir(self.path + ".lock")
+
+        with self.assertRaises(RuntimeError):
+            claude._write_oauth_account(self.path, {"accountUuid": "uuid-personal"})
+
+        self.assertEqual(self.read()["oauthAccount"]["accountUuid"], "uuid-work")
+
+    def test_the_config_lock_is_taken_and_released(self):
+        claude._write_oauth_account(self.path, {"accountUuid": "uuid-personal"})
+
+        self.assertFalse(os.path.exists(self.path + ".lock"), "a leaked lock blocks Claude")
+        self.assertEqual(self.read()["oauthAccount"]["accountUuid"], "uuid-personal")
+
+    def test_a_stale_config_lock_does_not_block_forever(self):
+        lock = self.path + ".lock"
+        os.mkdir(lock)
+        long_ago = time.time() - (claude.CONFIG_LOCK_STALE_MS / 1000) - 10
+        os.utime(lock, (long_ago, long_ago))
+
+        claude._write_oauth_account(self.path, {"accountUuid": "uuid-personal"})
+
+        self.assertEqual(self.read()["oauthAccount"]["accountUuid"], "uuid-personal")
+
     def test_it_swaps_the_identity_and_keeps_every_other_key(self):
         claude._write_oauth_account(self.path, {"accountUuid": "uuid-personal"})
 

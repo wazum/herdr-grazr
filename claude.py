@@ -26,25 +26,45 @@ USAGE_STALE_AFTER_MS = 3_600_000
 # proper-lockfile options Claude uses for .oauth_refresh.lock in the same binary.
 OAUTH_LOCK_STALE_MS = 60_000
 
+# Claude's saveConfigWithLock guards ~/.claude.json with <config path>.lock,
+# built at runtime. Its stale age is not published, so this matches the other.
+CONFIG_LOCK_STALE_MS = 60_000
+
 
 @contextlib.contextmanager
-def _oauth_refresh_lock(config_dir):
-    """Hold Claude's OAuth refresh lock so a token refresh cannot rewrite the
-    live keychain item midway through a swap. proper-lockfile acquires by
-    mkdir, so grazr does too."""
-    path = os.path.join(config_dir, ".oauth_refresh.lock")
+def _proper_lock(path, stale_ms, busy_message):
+    """Claude locks with proper-lockfile, which acquires by mkdir and treats a
+    holder older than its stale age as abandoned. grazr does the same so the two
+    exclude each other.
+
+    Release only removes a lock still carrying the mtime we created it with. If
+    ours went stale and Claude replaced it, that lock is Claude's to free.
+    """
     try:
         os.mkdir(path)
     except FileExistsError:
-        age_ms = (time.time() - os.path.getmtime(path)) * 1000
-        if age_ms < OAUTH_LOCK_STALE_MS:
-            raise RuntimeError("Claude is refreshing its token; not swapping now")
+        if (time.time() - os.path.getmtime(path)) * 1000 < stale_ms:
+            raise RuntimeError(busy_message)
         os.rmdir(path)
         os.mkdir(path)
+    held_since = os.path.getmtime(path)
     try:
         yield
     finally:
-        os.rmdir(path)
+        try:
+            if os.path.getmtime(path) == held_since:
+                os.rmdir(path)
+        except OSError:
+            pass
+
+
+def _oauth_refresh_lock(config_dir):
+    """Held across a swap so a token refresh cannot rewrite the live item."""
+    return _proper_lock(
+        os.path.join(config_dir, ".oauth_refresh.lock"),
+        OAUTH_LOCK_STALE_MS,
+        "Claude is refreshing its token; not swapping now",
+    )
 
 
 def _run_security(line, spawn=subprocess.run):
@@ -321,21 +341,29 @@ def _write_oauth_account(config_path, oauth_account):
     """Point ~/.claude.json at another identity. Read-modify-write preserving
     every other key, then one atomic replace, because Claude watches this file
     rather than locking it."""
-    with open(config_path) as handle:
-        config = json.load(handle)
-    config["oauthAccount"] = oauth_account
+    lock = _proper_lock(
+        config_path + ".lock",
+        CONFIG_LOCK_STALE_MS,
+        "Claude is writing its config; not swapping now",
+    )
+    with lock:
+        # Read inside the lock: Claude re-reads and merges under it too, so a
+        # copy taken earlier could already be out of date.
+        with open(config_path) as handle:
+            config = json.load(handle)
+        config["oauthAccount"] = oauth_account
 
-    directory = os.path.dirname(config_path) or "."
-    handle, temporary = tempfile.mkstemp(dir=directory, prefix=".grazr-", suffix=".json")
-    try:
-        with os.fdopen(handle, "w") as writer:
-            json.dump(config, writer)
-        os.chmod(temporary, os.stat(config_path).st_mode & 0o777)
-        os.replace(temporary, config_path)
-    except BaseException:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-        raise
+        directory = os.path.dirname(config_path) or "."
+        handle, temporary = tempfile.mkstemp(dir=directory, prefix=".grazr-", suffix=".json")
+        try:
+            with os.fdopen(handle, "w") as writer:
+                json.dump(config, writer)
+            os.chmod(temporary, os.stat(config_path).st_mode & 0o777)
+            os.replace(temporary, config_path)
+        except BaseException:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+            raise
 
 
 def _read_credential(service, account, spawn=subprocess.run):
