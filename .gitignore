@@ -10,3 +10,4 @@ last_notice
 rotate.lock
 
 .DS_Store
+.idea/
