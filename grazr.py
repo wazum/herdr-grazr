@@ -344,7 +344,7 @@ def hook():
         accounts = claude.load_accounts(paths, config.accounts)
         decision = core.decide(limits, active, accounts, now, config.thresholds)
         line = act_on(
-            decision, paths, store, state_dir, active, limits, config.dry_run, accounts
+            decision, paths, store, state_dir, active, limits, config.dry_run, accounts, now
         )
 
     if line:
