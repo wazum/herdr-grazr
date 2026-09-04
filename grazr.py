@@ -183,9 +183,22 @@ def load_config(path):
             tokens = shlex.split(line, comments=True)
             if not tokens:
                 continue
-            key, separator, value = tokens[0].partition("=")
-            if not separator:
-                raise ValueError("%s line %d: expected KEY=value" % (path, number))
+            # A quoted value survives as one token, so leftovers mean it was
+            # unquoted, which used to drop every name after the first.
+            if len(tokens) >= 3 and tokens[1] == "=":
+                key, value, leftover = tokens[0], tokens[2], tokens[3:]
+            else:
+                key, separator, value = tokens[0].partition("=")
+                leftover = tokens[1:]
+                if not separator or not key:
+                    raise ValueError("%s line %d: expected KEY=value" % (path, number))
+            if leftover:
+                raise ValueError(
+                    '%s line %d: quote the value, as in %s="%s"'
+                    % (path, number, key, " ".join([value] + leftover))
+                )
+            if key in settings:
+                raise ValueError("%s line %d: %s is set twice" % (path, number, key))
             settings[key] = value
 
     # An omitted setting takes the documented default; a misspelt one is

@@ -1173,6 +1173,29 @@ class ConfigTest(unittest.TestCase):
         self.assertTrue(os.path.exists(self.path))
         self.assertEqual(config, grazr.load_config(self.path))
 
+    def test_an_unquoted_list_is_rejected_rather_than_half_read(self):
+        """It used to keep only the first name, halving the rotation pool."""
+        self.write("ACCOUNTS=work personal\n")
+
+        with self.assertRaises(ValueError) as raised:
+            grazr.load_config(self.path)
+
+        self.assertIn("ACCOUNTS", str(raised.exception))
+
+    def test_spaces_around_the_equals_sign_are_accepted(self):
+        self.write("REMAINING_SESSION = 15\nACCOUNTS = \"work personal\"\n")
+
+        config = grazr.load_config(self.path)
+
+        self.assertEqual(config.thresholds["session"], 15)
+        self.assertEqual(config.accounts, ["work", "personal"])
+
+    def test_the_same_key_twice_is_rejected(self):
+        self.write("REMAINING_SESSION=15\nREMAINING_SESSION=20\nACCOUNTS=work\n")
+
+        with self.assertRaises(ValueError):
+            grazr.load_config(self.path)
+
     def test_a_threshold_outside_nought_to_a_hundred_is_rejected_by_name(self):
         self.write("REMAINING_SESSION=140\nREMAINING_WEEKLY=20\nACCOUNTS=work\n")
 
