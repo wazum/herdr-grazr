@@ -51,13 +51,15 @@ def notify(title, body, spawn=subprocess.run):
     An in-app toast is a 3 second blink whatever the sound: the API path pins
     the kind to UpdateInstalled and only the delivery mode changes how long it
     lasts. Users who want to read it set `delivery = "system"` or `"terminal"`
-    in Herdr, which is why the body stays short enough for either.
+    in Herdr, which is why the body stays short enough for either. The sound
+    carries what three seconds may not: grazr only ever speaks up for a swap,
+    a restriction, or having nowhere left to go.
     """
     herdr = os.environ.get("HERDR_BIN_PATH")
     if not herdr:
         return False
     completed = spawn(
-        [herdr, "notification", "show", title, "--body", body, "--sound", "none"],
+        [herdr, "notification", "show", title, "--body", body, "--sound", "request"],
         capture_output=True,
         text=True,
     )

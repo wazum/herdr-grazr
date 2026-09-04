@@ -1112,6 +1112,9 @@ class NotifyTest(unittest.TestCase):
 
         self.assertTrue(shown)
         self.assertEqual(argv[:3], ["/usr/bin/herdr", "notification", "show"])
+        # A swap changes which subscription you are spending and drops Remote
+        # Control. That is worth hearing, not just seeing for three seconds.
+        self.assertEqual(argv[argv.index("--sound") + 1], "request")
 
     def test_a_suppressed_toast_reports_failure(self):
         for reason in ("disabled", "busy", "rate_limited", "no_foreground_client"):
