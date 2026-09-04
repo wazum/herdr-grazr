@@ -39,6 +39,9 @@ _FLAG_KEYS = (("ENABLED", True), ("DRY_RUN", False))
 
 TURN_ENDS = ("idle", "done")
 
+# Telling the user is worth a moment, but not a stuck hook on every turn end.
+NOTIFY_TIMEOUT_SECONDS = 5
+
 
 def notify(title, body, spawn=subprocess.run):
     """Herdr's own toast. Returns whether it was actually shown.
@@ -58,14 +61,15 @@ def notify(title, body, spawn=subprocess.run):
     herdr = os.environ.get("HERDR_BIN_PATH")
     if not herdr:
         return False
-    completed = spawn(
-        [herdr, "notification", "show", title, "--body", body, "--sound", "request"],
-        capture_output=True,
-        text=True,
-    )
     try:
+        completed = spawn(
+            [herdr, "notification", "show", title, "--body", body, "--sound", "request"],
+            capture_output=True,
+            text=True,
+            timeout=NOTIFY_TIMEOUT_SECONDS,
+        )
         return json.loads(completed.stdout)["result"]["shown"] is True
-    except (ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
         return False
 
 

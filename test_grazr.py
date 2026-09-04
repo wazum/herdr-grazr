@@ -1337,6 +1337,21 @@ class NotifyTest(unittest.TestCase):
                 shown, _ = self.notify({"result": {"shown": False, "reason": reason}})
                 self.assertFalse(shown)
 
+    def test_a_hanging_herdr_cli_does_not_hang_the_hook(self):
+        def fake_subprocess(argv, **kwargs):
+            self.assertTrue(kwargs.get("timeout"), "notify needs a timeout")
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+        with mock.patch.dict(os.environ, {"HERDR_BIN_PATH": "/usr/bin/herdr"}):
+            self.assertFalse(grazr.notify("t", "b", spawn=fake_subprocess))
+
+    def test_a_broken_herdr_binary_is_not_a_claim_of_success(self):
+        def fake_subprocess(argv, **kwargs):
+            raise OSError("no such file")
+
+        with mock.patch.dict(os.environ, {"HERDR_BIN_PATH": "/usr/bin/herdr"}):
+            self.assertFalse(grazr.notify("t", "b", spawn=fake_subprocess))
+
     def test_no_herdr_binary_is_not_a_claim_of_success(self):
         shown, argv = self.notify({"result": {"shown": True}}, herdr="")
 
