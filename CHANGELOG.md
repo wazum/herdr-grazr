@@ -6,6 +6,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Changed
+
+- The manifest description now says what grazr does in the words people
+  search for: automatic account switching at the usage limit.
+
 ### Fixed
 
 - A live usage reply in an unexpected shape now reads as "unknown" instead of
