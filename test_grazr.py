@@ -266,8 +266,7 @@ class CredentialInstallTest(unittest.TestCase):
         budget while overflowing the real one, and overflow destroys the item."""
         account = "ü" * 20
         prefix = len("add-generic-password -U -s svc -a %s -X " % shlex.quote(account))
-        # One character under, so the line fits the CHARACTER budget and only a
-        # byte-aware gate refuses it.
+        # One character under, so only a byte-aware gate refuses it.
         blob = "x" * ((claude.MAX_SECURITY_LINE - prefix) // 2 - 1)
         line = "add-generic-password -U -s svc -a %s -X %s" % (account, blob.encode().hex())
         self.assertLessEqual(len(line), claude.MAX_SECURITY_LINE, "fixture must fit in characters")
@@ -621,6 +620,24 @@ class OAuthRefreshLockTest(unittest.TestCase):
             self.assertTrue(os.path.isdir(self.lock_path))
 
         self.assertFalse(os.path.exists(self.lock_path))
+
+    def test_a_slow_swap_cannot_outlive_its_own_lock(self):
+        """A lock is judged by its mtime, so three slow keychain calls must not
+        add up past the stale age, or Claude takes the lock mid-swap."""
+        self.assertLess(
+            3 * claude.SECURITY_TIMEOUT_SECONDS * 1000,
+            claude.OAUTH_LOCK_STALE_MS,
+            "a worst-case swap must stay inside the stale age",
+        )
+
+    def test_holding_the_lock_keeps_it_fresh(self):
+        with claude._oauth_refresh_lock(self.config_dir) as renew:
+            aged = time.time() - 30
+            os.utime(self.lock_path, (aged, aged))
+
+            renew()
+
+            self.assertGreater(os.path.getmtime(self.lock_path), aged + 20)
 
     def test_the_lock_is_released_even_when_the_swap_fails(self):
         with self.assertRaises(ZeroDivisionError):
@@ -1334,9 +1351,8 @@ class HookTest(unittest.TestCase):
         self.claude_dir = os.path.join(self.directory, "claude")
         for made in (self.state_dir, self.claude_dir, os.path.join(self.state_dir, "accounts")):
             os.makedirs(made)
-        # hook() reads the real clock, so this fixture must be fresh and its
-        # window must reset in the future relative to wall time. A fixed
-        # timestamp here quietly stops exercising rotation once it ages out.
+        # hook() reads the real clock. A fixed timestamp here goes stale and
+        # quietly stops testing rotation at all.
         self.write_usage(percent=99)
         for identifier, name in (("uuid-work", "work"), ("uuid-personal", "personal")):
             with open(os.path.join(self.state_dir, "accounts", identifier + ".json"), "w") as f:

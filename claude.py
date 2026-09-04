@@ -17,8 +17,8 @@ import core
 
 SERVICE = "Claude Code-credentials"
 
-# Measured against security(1) 2026-09-04: a 4095 byte line installs; at 4096 it
-# truncates, writes the truncated prefix over the item, and only then exits 1.
+# Measured 2026-09-04. At 4096 security truncates the line, writes the
+# truncated prefix over the item, and only then exits 1.
 MAX_SECURITY_LINE = 4095
 
 # Claude treats its cached usage as stale past this age (OZr in the 2.1.260 binary).
@@ -27,13 +27,13 @@ USAGE_STALE_AFTER_MS = 3_600_000
 # proper-lockfile options Claude uses for .oauth_refresh.lock in the same binary.
 OAUTH_LOCK_STALE_MS = 60_000
 
-# Claude's saveConfigWithLock builds this path at runtime, which is why the
-# name is not greppable. Its stale age is unpublished, so this matches the other.
+# Claude's saveConfigWithLock builds this path at runtime, so the name is not
+# greppable. Its stale age is unpublished, so this matches the other lock.
 CONFIG_LOCK_STALE_MS = 60_000
 
-# Well inside the lock stale ages: hanging longer would let Claude judge
-# grazr's lock abandoned while grazr still holds it.
-SECURITY_TIMEOUT_SECONDS = 20
+# A swap makes three of these calls. All three at full timeout must still fit
+# inside the lock stale ages.
+SECURITY_TIMEOUT_SECONDS = 15
 
 
 @contextlib.contextmanager
@@ -49,10 +49,18 @@ def _proper_lock(path, stale_ms, busy_message):
             raise RuntimeError(busy_message)
         os.rmdir(path)
         os.mkdir(path)
-    held_since = os.path.getmtime(path)
+    held = [os.path.getmtime(path)]
+
+    def renew():
+        """Claude refreshes its own lock every 5s. Slow work must do the same,
+        or the lock looks abandoned and Claude takes it."""
+        os.utime(path, None)
+        held[0] = os.path.getmtime(path)
+
     try:
-        yield
+        yield renew
     finally:
+        held_since = held[0]
         try:
             if os.path.getmtime(path) == held_since:
                 os.rmdir(path)
@@ -82,8 +90,8 @@ def _run_security(line, spawn=subprocess.run):
     except subprocess.TimeoutExpired:
         raise RuntimeError("the keychain did not answer within %ds" % SECURITY_TIMEOUT_SECONDS)
     if completed.returncode != 0:
-        # security echoes the tail of the blob when it rejects a truncated line,
-        # and this message reaches the plugin log.
+        # security echoes the tail of the blob on a truncated line, and this
+        # message reaches the plugin log.
         scrubbed = re.sub(r"[0-9a-f]{16,}", "<hex>", completed.stderr.strip()[:200])
         raise RuntimeError("security refused the command: %s" % scrubbed)
     return completed.stdout
@@ -101,8 +109,8 @@ def read_limits(config, now):
     if not active or usage.get("accountUuid") != active:
         return "unknown"
 
-    # One broad guard: this is Claude's shape, it can change in any release, and
-    # a traceback on every turn end of every pane is worse than doing nothing.
+    # One broad guard. Claude's shape can change in any release, and a traceback
+    # on every turn end of every pane is worse than doing nothing.
     try:
         fetched_at = usage["fetchedAtMs"]
         if not isinstance(fetched_at, (int, float)) or isinstance(fetched_at, bool):
@@ -245,8 +253,7 @@ def enrol(paths, name, source_config_dir=None):
         identity = (json.load(handle).get("oauthAccount") or {})
     account_id = _account_id(identity.get("accountUuid"))
 
-    # Accounts are looked up by display name, so a duplicate would leave one of
-    # them permanently unreachable.
+    # Accounts are looked up by name, so a duplicate hides one of them for good.
     for existing in load_accounts(paths, []):
         if existing.name == name and existing.id != account_id:
             raise RuntimeError("the name %r is already used by another account" % name)
@@ -305,20 +312,29 @@ def rotate(paths, active_id, next_id, snapshot):
         raise RuntimeError("no parked credential for %s; enrol it again" % next_id)
     identity = _load_account(paths, next_id)["oauthAccount"]
 
-    # Both locks before the first write. The identity write comes last but its
-    # lock is contended like any other, and rejecting it after the keychain has
-    # already moved is the one thing this ordering exists to prevent.
-    with _config_lock(paths.config_path), _oauth_refresh_lock(paths.config_dir):
+    # Both locks before the first write. The identity write comes last, but its
+    # lock can be busy too, and refusing after the keychain moved is the whole
+    # thing this order prevents.
+    with _config_lock(paths.config_path) as renew_config, _oauth_refresh_lock(
+        paths.config_dir
+    ) as renew_oauth:
+
+        def renew():
+            renew_config()
+            renew_oauth()
+
         leaving = _read_credential(SERVICE, paths.keychain_account)
         if leaving is None:
             raise RuntimeError("no live credential to park; refusing to swap")
-        # If the live item already holds the arriving blob, a previous attempt
-        # swapped the keychain and died before writing the identity. Parking
-        # again would store the arriving blob under the outgoing account and
-        # destroy its credential, so only the identity write is left to redo.
+        renew()
+        # The live item already holding the arriving blob means an earlier try
+        # swapped the keychain and died before the identity write. Parking again
+        # would overwrite the outgoing account's own credential.
         if leaving != arriving:
             _install_credential(_parked_service(active_id), paths.keychain_account, leaving)
+            renew()
             _install_credential(SERVICE, paths.keychain_account, arriving)
+            renew()
         _merge_oauth_account(paths.config_path, identity)
 
     _record_snapshot(paths, active_id, snapshot)
@@ -427,8 +443,8 @@ def _read_credential(service, account, spawn=subprocess.run):
 
 
 def _install_credential(service, account, blob, run=None):
-    # `security -i` tokenises its line, and the live service name has a space
-    # in it, so the names must be quoted. The hex payload never needs it.
+    # `security -i` splits its line into tokens and the live service name has a
+    # space, so the names need quoting. The hex payload never does.
     line = "add-generic-password -U -s %s -a %s -X %s" % (
         shlex.quote(service),
         shlex.quote(account),
