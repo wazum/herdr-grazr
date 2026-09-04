@@ -469,7 +469,7 @@ def enrol():
     source = os.path.abspath(
         os.path.join(paths.accounts_dir, "..", "enrol-%d" % os.getpid())
     )
-    os.makedirs(source, exist_ok=True)
+    os.makedirs(source, mode=0o700, exist_ok=True)
     # Everything after the directory exists is inside the try: an abort at the
     # browser step or the name prompt would otherwise strand a real credential
     # in the keychain under a service name nothing tracks.
