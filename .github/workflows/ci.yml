@@ -155,7 +155,7 @@ jobs:
                       names = [(node.module or "").split(".")[0]]
                   for name in names:
                       assert (
-                          name in ("core", "claude", "grazr")
+                          name in ("core", "claude", "grazr", "stores")
                           or name in __import__("sys").stdlib_module_names
                       ), "%s imports non-stdlib %s" % (path, name)
 

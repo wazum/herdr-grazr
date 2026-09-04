@@ -16,6 +16,7 @@ from unittest import mock
 
 import claude
 import grazr
+import stores
 from core import Account, Limit, decide
 
 NOW = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
@@ -35,6 +36,36 @@ def account(identifier, snapshot=None):
 
 def account_named(name, identifier, snapshot=None):
     return Account(id=identifier, name=name, snapshot=snapshot)
+
+
+class FakeStore:
+    def __init__(self, live=None, parked=None, isolated=None):
+        self.live = live
+        self.parked = dict(parked or {})
+        self.isolated = dict(isolated or {})
+        self.events = []
+        self.discard_result = True
+
+    def read_live(self):
+        return self.live
+
+    def write_live(self, blob):
+        self.events.append(("write_live", blob))
+        self.live = blob
+
+    def read_parked(self, account_id):
+        return self.parked.get(account_id)
+
+    def write_parked(self, account_id, blob):
+        self.events.append(("write_parked", account_id, blob))
+        self.parked[account_id] = blob
+
+    def read_isolated(self, config_dir):
+        return self.isolated.get(config_dir)
+
+    def discard_isolated(self, config_dir):
+        self.isolated.pop(config_dir, None)
+        return self.discard_result
 
 
 def spent_account():
@@ -234,14 +265,14 @@ class TwoWeeklyLimitsTest(unittest.TestCase):
 
 class ServiceNameTest(unittest.TestCase):
     def test_the_live_login_has_no_directory_suffix(self):
-        self.assertEqual(claude.service_name(), "Claude Code-credentials")
+        self.assertEqual(stores.service_name(), "Claude Code-credentials")
 
     def test_an_isolated_directory_appends_its_hash_last(self):
         directory = "/tmp/grazr-enrol-personal"
         expected = hashlib.sha256(directory.encode()).hexdigest()[:8]
 
         self.assertEqual(
-            claude.service_name(directory), "Claude Code-credentials-" + expected
+            stores.service_name(directory), "Claude Code-credentials-" + expected
         )
 
     def test_a_decomposed_path_hashes_the_same_as_its_composed_form(self):
@@ -250,18 +281,153 @@ class ServiceNameTest(unittest.TestCase):
         composed = "/tmp/grazr-über"
         decomposed = "/tmp/grazr-über"
 
-        self.assertEqual(claude.service_name(decomposed), claude.service_name(composed))
+        self.assertEqual(stores.service_name(decomposed), stores.service_name(composed))
+
+
+class KeychainStoreTest(unittest.TestCase):
+    """Where a secret physically lives is the store's business alone; the rest
+    of grazr speaks read/write, live/parked."""
+
+    def store(self, spawn):
+        return stores.KeychainStore("Claude Code-credentials", "tester", spawn=spawn)
+
+    def test_read_live_asks_for_the_live_item_and_returns_the_blob(self):
+        recorded = {}
+
+        def fake_subprocess(argv, capture_output, text, **kwargs):
+            recorded["argv"] = argv
+            return SimpleNamespace(returncode=0, stdout='{"token":"abc"}\n', stderr="")
+
+        blob = self.store(fake_subprocess).read_live()
+
+        self.assertEqual(blob, '{"token":"abc"}')
+        self.assertEqual(
+            recorded["argv"],
+            [
+                "security",
+                "find-generic-password",
+                "-s",
+                "Claude Code-credentials",
+                "-a",
+                "tester",
+                "-w",
+            ],
+        )
+
+    def test_write_live_feeds_security_i_a_quoted_hex_line(self):
+        recorded = {}
+
+        def fake_subprocess(argv, input, capture_output, text, **kwargs):
+            recorded["argv"] = argv
+            recorded["line"] = input
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        self.store(fake_subprocess).write_live('{"token":"abc"}')
+
+        self.assertEqual(recorded["argv"], ["security", "-i"])
+        self.assertEqual(
+            recorded["line"],
+            "add-generic-password -U -s 'Claude Code-credentials' -a tester -X %s\n"
+            % '{"token":"abc"}'.encode().hex(),
+        )
+
+    def test_a_parked_credential_lives_under_the_account_s_own_service(self):
+        """The parked naming scheme is the store's business: another adapter
+        may park under a filename instead, and no caller may care."""
+        keychain = {}
+
+        def fake_subprocess(argv, input=None, capture_output=True, text=True, **kwargs):
+            if argv[:2] == ["security", "-i"]:
+                service = shlex.split(input)[3]
+                keychain[service] = shlex.split(input)[7]
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            service = argv[argv.index("-s") + 1]
+            if service not in keychain:
+                return SimpleNamespace(returncode=44, stdout="", stderr="not found")
+            return SimpleNamespace(returncode=0, stdout=keychain[service] + "\n", stderr="")
+
+        store = self.store(fake_subprocess)
+        store.write_parked("uuid-work", "BLOB-WORK")
+
+        self.assertEqual(list(keychain), ["grazr-uuid-work"])
+        self.assertEqual(store.read_parked("uuid-work"), "BLOB-WORK")
+        self.assertIsNone(store.read_parked("uuid-personal"))
+
+    def test_read_isolated_asks_for_the_directory_s_own_item(self):
+        directory = "/tmp/grazr-enrol-personal"
+        suffix = hashlib.sha256(directory.encode()).hexdigest()[:8]
+        recorded = {}
+
+        def fake_subprocess(argv, capture_output, text, **kwargs):
+            recorded["argv"] = argv
+            return SimpleNamespace(returncode=0, stdout="ISOLATED\n", stderr="")
+
+        blob = self.store(fake_subprocess).read_isolated(directory)
+
+        self.assertEqual(blob, "ISOLATED")
+        self.assertEqual(recorded["argv"][3], "Claude Code-credentials-" + suffix)
+
+    def test_discard_isolated_reports_whether_the_item_is_gone(self):
+        """Missing counts as gone; a keychain error does not, and never raises:
+        the caller runs in a finally and must not mask the real failure."""
+        for returncode, expected in ((0, True), (44, True), (1, False)):
+            with self.subTest(returncode=returncode):
+                recorded = {}
+
+                def fake_subprocess(argv, capture_output, timeout, _rc=returncode):
+                    recorded["argv"] = argv
+                    return SimpleNamespace(returncode=_rc)
+
+                removed = self.store(fake_subprocess).discard_isolated("/tmp/grazr-x")
+
+                self.assertIs(removed, expected)
+                suffix = hashlib.sha256(b"/tmp/grazr-x").hexdigest()[:8]
+                self.assertEqual(
+                    recorded["argv"],
+                    [
+                        "security",
+                        "delete-generic-password",
+                        "-s",
+                        "Claude Code-credentials-" + suffix,
+                        "-a",
+                        "tester",
+                    ],
+                )
+
+    def test_discard_isolated_swallows_a_keychain_that_will_not_answer(self):
+        def exploding_spawn(argv, capture_output, timeout):
+            raise subprocess.TimeoutExpired(argv, timeout)
+
+        self.assertIs(self.store(exploding_spawn).discard_isolated("/tmp/grazr-x"), False)
+
+
+class HasParkedCredentialTest(unittest.TestCase):
+    """An account whose parked credential went missing cannot be rotated to,
+    and the only way to find out is to ask the store."""
+
+    def test_a_parked_account_answers_true_a_missing_one_false(self):
+        store = FakeStore(parked={"uuid-work": "BLOB"})
+
+        self.assertTrue(claude.has_parked_credential(store, "uuid-work"))
+        self.assertFalse(claude.has_parked_credential(store, "uuid-personal"))
 
 
 class CredentialInstallTest(unittest.TestCase):
     """`security -i` truncates past 4095 bytes and writes the truncated prefix
     over the item before it fails, so the refusal has to happen before the call."""
 
+    def install(self, service, account, blob, attempted):
+        def recording_spawn(argv, input, capture_output, text, **kwargs):
+            attempted.append(input.rstrip("\n"))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        stores.KeychainStore(service, account, spawn=recording_spawn).write_live(blob)
+
     def test_refuses_an_oversized_blob_without_invoking_security(self):
         attempted = []
 
         with self.assertRaises(ValueError):
-            claude._install_credential("svc", "acct", "x" * 2100, run=attempted.append)
+            self.install("svc", "acct", "x" * 2100, attempted)
 
         self.assertEqual(attempted, [])
 
@@ -269,7 +435,7 @@ class CredentialInstallTest(unittest.TestCase):
         blob = '{"claudeAiOauth":{"accessToken":"secret-value"}}'
         attempted = []
 
-        claude._install_credential("svc", "acct", blob, run=attempted.append)
+        self.install("svc", "acct", blob, attempted)
 
         self.assertEqual(
             attempted,
@@ -280,7 +446,7 @@ class CredentialInstallTest(unittest.TestCase):
     def test_the_ceiling_is_the_measured_4095_bytes(self):
         """Measured against the real binary: a 4095 byte line installs, 4096
         truncates the item destructively. The newline is not counted."""
-        self.assertEqual(claude.MAX_SECURITY_LINE, 4095)
+        self.assertEqual(stores.MAX_SECURITY_LINE, 4095)
 
     def test_a_line_of_exactly_the_ceiling_installs_and_one_byte_more_refuses(self):
         """4095 installs; 4096 truncates the item destructively, verified
@@ -289,7 +455,7 @@ class CredentialInstallTest(unittest.TestCase):
         service = "svcx"
         for account, expected in (("acct", 4095), ("acctx", 4096)):
             prefix = len("add-generic-password -U -s %s -a %s -X " % (service, account))
-            blob = "x" * ((claude.MAX_SECURITY_LINE + 1 - prefix) // 2)
+            blob = "x" * ((stores.MAX_SECURITY_LINE + 1 - prefix) // 2)
             line = "add-generic-password -U -s %s -a %s -X %s" % (
                 service,
                 account,
@@ -298,14 +464,13 @@ class CredentialInstallTest(unittest.TestCase):
             self.assertEqual(len(line), expected, "fixture must land on %d" % expected)
 
             attempted = []
-            if expected <= claude.MAX_SECURITY_LINE:
-                claude._install_credential(service, account, blob, run=attempted.append)
-                self.assertEqual(len(attempted[0]), claude.MAX_SECURITY_LINE)
+            if expected <= stores.MAX_SECURITY_LINE:
+                self.install(service, account, blob, attempted)
+                self.assertEqual(len(attempted[0]), stores.MAX_SECURITY_LINE)
             else:
                 with self.assertRaises(ValueError):
-                    claude._install_credential(service, account, blob, run=attempted.append)
+                    self.install(service, account, blob, attempted)
                 self.assertEqual(attempted, [])
-
 
     def test_the_real_service_name_survives_the_interactive_parser(self):
         """`security -i` splits its line into tokens, and the live service name
@@ -313,7 +478,7 @@ class CredentialInstallTest(unittest.TestCase):
         `-s Claude` plus a stray argument."""
         attempted = []
 
-        claude._install_credential(claude.SERVICE, "some user", "x", run=attempted.append)
+        self.install(stores.SERVICE, "some user", "x", attempted)
 
         self.assertEqual(
             shlex.split(attempted[0])[:6],
@@ -326,19 +491,22 @@ class CredentialInstallTest(unittest.TestCase):
         account = "ü" * 20
         prefix = len("add-generic-password -U -s svc -a %s -X " % shlex.quote(account))
         # One character under, so only a byte-aware gate refuses it.
-        blob = "x" * ((claude.MAX_SECURITY_LINE - prefix) // 2 - 1)
+        blob = "x" * ((stores.MAX_SECURITY_LINE - prefix) // 2 - 1)
         line = "add-generic-password -U -s svc -a %s -X %s" % (account, blob.encode().hex())
-        self.assertLessEqual(len(line), claude.MAX_SECURITY_LINE, "fixture must fit in characters")
-        self.assertGreater(len(line.encode()), claude.MAX_SECURITY_LINE, "but not in bytes")
+        self.assertLessEqual(len(line), stores.MAX_SECURITY_LINE, "fixture must fit in characters")
+        self.assertGreater(len(line.encode()), stores.MAX_SECURITY_LINE, "but not in bytes")
         attempted = []
 
         with self.assertRaises(ValueError):
-            claude._install_credential("svc", account, blob, run=attempted.append)
+            self.install("svc", account, blob, attempted)
 
         self.assertEqual(attempted, [])
 
 
 class SecurityRunnerTest(unittest.TestCase):
+    def store(self, spawn):
+        return stores.KeychainStore("svc", "acct", spawn=spawn)
+
     def test_the_secret_travels_on_stdin_and_never_on_argv(self):
         recorded = {}
 
@@ -347,11 +515,11 @@ class SecurityRunnerTest(unittest.TestCase):
             recorded["input"] = input
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-        claude._run_security("add-generic-password -X deadbeef", spawn=fake_subprocess)
+        self.store(fake_subprocess).write_live("secret-blob")
 
         self.assertEqual(recorded["argv"], ["security", "-i"])
-        self.assertIn("deadbeef", recorded["input"])
-        self.assertNotIn("deadbeef", " ".join(recorded["argv"]))
+        self.assertIn("secret-blob".encode().hex(), recorded["input"])
+        self.assertNotIn("secret-blob".encode().hex(), " ".join(recorded["argv"]))
         # Without the newline `security -i` exits 0 having written nothing.
         self.assertTrue(recorded["input"].endswith("\n"))
 
@@ -360,7 +528,7 @@ class SecurityRunnerTest(unittest.TestCase):
             return SimpleNamespace(returncode=1, stdout="", stderr="security: unknown command")
 
         with self.assertRaises(RuntimeError):
-            claude._run_security("add-generic-password -X deadbeef", spawn=fake_subprocess)
+            self.store(fake_subprocess).write_live("blob")
 
     def test_every_keychain_call_is_bounded(self):
         """A blocked keychain would hang the hook, and holding past the stale
@@ -371,8 +539,8 @@ class SecurityRunnerTest(unittest.TestCase):
             seen[argv[1]] = kwargs.get("timeout")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-        claude._run_security("add-generic-password -X ab", spawn=fake_subprocess)
-        claude._read_credential("svc", "acct", spawn=fake_subprocess)
+        self.store(fake_subprocess).write_live("blob")
+        self.store(fake_subprocess).read_live()
 
         self.assertTrue(all(seen.values()), "every security call needs a timeout: %s" % seen)
         self.assertLessEqual(max(seen.values()) * 1000, claude.OAUTH_LOCK_STALE_MS)
@@ -382,9 +550,9 @@ class SecurityRunnerTest(unittest.TestCase):
             raise subprocess.TimeoutExpired(argv, kwargs.get("timeout", 1))
 
         with self.assertRaises(RuntimeError):
-            claude._run_security("add-generic-password -X ab", spawn=fake_subprocess)
+            self.store(fake_subprocess).write_live("blob")
         with self.assertRaises(RuntimeError):
-            claude._read_credential("svc", "acct", spawn=fake_subprocess)
+            self.store(fake_subprocess).read_live()
 
     def test_hex_cut_short_by_the_length_cap_is_still_scrubbed(self):
         """A hex tail left too short to match puts part of a credential in the
@@ -397,7 +565,7 @@ class SecurityRunnerTest(unittest.TestCase):
             return SimpleNamespace(returncode=1, stdout="", stderr=leaked)
 
         with self.assertRaises(RuntimeError) as raised:
-            claude._run_security("add-generic-password -X ab", spawn=fake_subprocess)
+            self.store(fake_subprocess).write_live("blob")
 
         self.assertNotIn("88888888", str(raised.exception))
 
@@ -410,7 +578,7 @@ class SecurityRunnerTest(unittest.TestCase):
             return SimpleNamespace(returncode=1, stdout="", stderr=leaked)
 
         with self.assertRaises(RuntimeError) as raised:
-            claude._run_security("add-generic-password -X deadbeef", spawn=fake_subprocess)
+            self.store(fake_subprocess).write_live("blob")
 
         self.assertNotIn("87" * 40, str(raised.exception))
 
@@ -563,6 +731,9 @@ class ReadLimitsTest(unittest.TestCase):
 
 
 class CredentialReadTest(unittest.TestCase):
+    def read(self, spawn):
+        return stores.KeychainStore("svc", "acct", spawn=spawn).read_live()
+
     def test_it_asks_for_the_named_item_and_returns_the_blob(self):
         recorded = {}
 
@@ -570,7 +741,7 @@ class CredentialReadTest(unittest.TestCase):
             recorded["argv"] = argv
             return SimpleNamespace(returncode=0, stdout='{"token":"abc"}\n', stderr="")
 
-        blob = claude._read_credential("svc", "acct", spawn=fake_subprocess)
+        blob = self.read(fake_subprocess)
 
         self.assertEqual(blob, '{"token":"abc"}')
         self.assertEqual(
@@ -582,7 +753,7 @@ class CredentialReadTest(unittest.TestCase):
         def fake_subprocess(argv, capture_output, text, **kwargs):
             return SimpleNamespace(returncode=0, stdout='{"t":1}'.encode().hex() + "\n", stderr="")
 
-        self.assertEqual(claude._read_credential("svc", "acct", spawn=fake_subprocess), '{"t":1}')
+        self.assertEqual(self.read(fake_subprocess), '{"t":1}')
 
     def test_a_missing_item_is_none_rather_than_an_error(self):
         """Not-found is ordinary: an account is parked for the first time."""
@@ -590,7 +761,7 @@ class CredentialReadTest(unittest.TestCase):
         def fake_subprocess(argv, capture_output, text, **kwargs):
             return SimpleNamespace(returncode=44, stdout="", stderr="could not be found")
 
-        self.assertIsNone(claude._read_credential("svc", "acct", spawn=fake_subprocess))
+        self.assertIsNone(self.read(fake_subprocess))
 
 
 class OAuthAccountMergeTest(unittest.TestCase):
@@ -740,7 +911,7 @@ class OAuthRefreshLockTest(unittest.TestCase):
         """A lock is judged by its mtime, so three slow keychain calls must not
         add up past the stale age, or Claude takes the lock mid-swap."""
         self.assertLess(
-            3 * claude.SECURITY_TIMEOUT_SECONDS * 1000,
+            3 * stores.SECURITY_TIMEOUT_SECONDS * 1000,
             claude.OAUTH_LOCK_STALE_MS,
             "a worst-case swap must stay inside the stale age",
         )
@@ -784,10 +955,8 @@ class RotateTest(unittest.TestCase):
             config_path=self.config_path,
             config_dir=self.directory,
             accounts_dir=self.accounts_dir,
-            keychain_account="tester",
         )
-        self.keychain = {"Claude Code-credentials": "LIVE-WORK", "grazr-uuid-personal": "PARKED-PERSONAL"}
-        self.events = []
+        self.store = FakeStore(live="LIVE-WORK", parked={"uuid-personal": "PARKED-PERSONAL"})
 
     def write_account(self, identifier, data):
         with open(os.path.join(self.accounts_dir, identifier + ".json"), "w") as handle:
@@ -797,40 +966,18 @@ class RotateTest(unittest.TestCase):
         with open(os.path.join(self.accounts_dir, identifier + ".json")) as handle:
             return json.load(handle)
 
-    def fake_read(self, service, account, **kwargs):
-        return self.keychain.get(service)
-
-    def fake_install(self, service, account, blob, **kwargs):
-        self.events.append(("install", service, blob))
-        self.keychain[service] = blob
-
     def run_rotate(self, snapshot="locked"):
-        with mock.patch.object(claude, "_read_credential", self.fake_read), mock.patch.object(
-            claude, "_install_credential", self.fake_install
-        ):
-            claude.rotate(self.paths, "uuid-work", "uuid-personal", snapshot)
-
-    def test_it_swaps_the_keychain_item_that_belongs_to_this_config_dir(self):
-        self.paths = self.paths._replace(service="Claude Code-credentials-deadbeef")
-        self.keychain["Claude Code-credentials-deadbeef"] = "LIVE-WORK"
-
-        self.run_rotate()
-
-        self.assertEqual(
-            [service for _, service, _ in self.events],
-            ["grazr-uuid-work", "Claude Code-credentials-deadbeef"],
-        )
-        self.assertEqual(self.keychain["Claude Code-credentials"], "LIVE-WORK")
+        claude.rotate(self.paths, self.store, "uuid-work", "uuid-personal", snapshot)
 
     def test_it_parks_the_live_blob_before_installing_the_next(self):
         self.run_rotate()
 
         self.assertEqual(
-            [(kind, service) for kind, service, _ in self.events],
-            [("install", "grazr-uuid-work"), ("install", "Claude Code-credentials")],
+            self.store.events,
+            [("write_parked", "uuid-work", "LIVE-WORK"), ("write_live", "PARKED-PERSONAL")],
         )
-        self.assertEqual(self.keychain["grazr-uuid-work"], "LIVE-WORK")
-        self.assertEqual(self.keychain["Claude Code-credentials"], "PARKED-PERSONAL")
+        self.assertEqual(self.store.parked["uuid-work"], "LIVE-WORK")
+        self.assertEqual(self.store.live, "PARKED-PERSONAL")
 
     def test_it_moves_the_identity_with_the_credential(self):
         self.run_rotate()
@@ -858,30 +1005,28 @@ class RotateTest(unittest.TestCase):
         self.assertEqual(claude.snapshot_from_json(stored), spent)
 
     def test_an_account_that_was_never_parked_aborts_before_any_write(self):
-        del self.keychain["grazr-uuid-personal"]
+        del self.store.parked["uuid-personal"]
 
         with self.assertRaises(RuntimeError):
             self.run_rotate()
 
-        self.assertEqual(self.events, [])
-        self.assertEqual(self.keychain["Claude Code-credentials"], "LIVE-WORK")
+        self.assertEqual(self.store.events, [])
+        self.assertEqual(self.store.live, "LIVE-WORK")
 
     def test_a_retry_after_a_crash_mid_swap_does_not_park_the_wrong_blob(self):
         """If the process dies between the keychain swap and the identity write,
         ~/.claude.json is still self-consistent, so the next hook decides to
         rotate again. The retry must not park the arriving blob over the
         outgoing account's parked credential and lose it for good."""
-        with mock.patch.object(claude, "_read_credential", self.fake_read), mock.patch.object(
-            claude, "_install_credential", self.fake_install
-        ), mock.patch.object(claude, "_merge_oauth_account", side_effect=OSError("disk full")):
+        with mock.patch.object(claude, "_merge_oauth_account", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
-                claude.rotate(self.paths, "uuid-work", "uuid-personal", "locked")
+                self.run_rotate()
 
-        self.assertEqual(self.keychain["Claude Code-credentials"], "PARKED-PERSONAL")
+        self.assertEqual(self.store.live, "PARKED-PERSONAL")
         self.run_rotate()
 
         self.assertEqual(
-            self.keychain["grazr-uuid-work"],
+            self.store.parked["uuid-work"],
             "LIVE-WORK",
             "the outgoing account's own credential must survive the retry",
         )
@@ -893,11 +1038,11 @@ class RotateTest(unittest.TestCase):
 
         self.run_rotate()
 
-        self.assertEqual(self.keychain["Claude Code-credentials"], "PARKED-PERSONAL")
+        self.assertEqual(self.store.live, "PARKED-PERSONAL")
         with open(self.config_path) as handle:
             self.assertEqual(json.load(handle)["oauthAccount"]["accountUuid"], "uuid-personal")
 
-    def test_a_held_config_lock_aborts_before_any_keychain_write(self):
+    def test_a_held_config_lock_aborts_before_any_credential_write(self):
         """The identity write is the last step but its lock is contended like
         any other, so it has to be held before the first mutation, not after."""
         os.mkdir(self.config_path + ".lock")
@@ -905,8 +1050,8 @@ class RotateTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.run_rotate()
 
-        self.assertEqual(self.events, [])
-        self.assertEqual(self.keychain["Claude Code-credentials"], "LIVE-WORK")
+        self.assertEqual(self.store.events, [])
+        self.assertEqual(self.store.live, "LIVE-WORK")
 
     def test_a_lock_held_by_claude_aborts_before_any_write(self):
         os.mkdir(os.path.join(self.directory, ".oauth_refresh.lock"))
@@ -914,8 +1059,8 @@ class RotateTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.run_rotate()
 
-        self.assertEqual(self.events, [])
-        self.assertEqual(self.keychain["Claude Code-credentials"], "LIVE-WORK")
+        self.assertEqual(self.store.events, [])
+        self.assertEqual(self.store.live, "LIVE-WORK")
 
 
 class SnapshotRoundTripTest(unittest.TestCase):
@@ -958,7 +1103,6 @@ class InspectTest(unittest.TestCase):
             config_path=self.config_path,
             config_dir=self.directory,
             accounts_dir=self.accounts_dir,
-            keychain_account="tester",
         )
 
     def write_account(self, identifier, data):
@@ -1040,26 +1184,17 @@ class EnrolTest(unittest.TestCase):
             config_path=self.config_path,
             config_dir=self.directory,
             accounts_dir=self.accounts_dir,
-            keychain_account="tester",
         )
-        self.keychain = {"Claude Code-credentials": "LIVE-WORK"}
-        self.installed = []
+        self.store = FakeStore(live="LIVE-WORK")
 
     def run_enrol(self, name="work", source=None):
-        with mock.patch.object(
-            claude, "_read_credential", lambda service, account, **kw: self.keychain.get(service)
-        ), mock.patch.object(
-            claude,
-            "_install_credential",
-            lambda service, account, blob, **kw: self.installed.append((service, blob)),
-        ):
-            return claude.enrol(self.paths, name, source)
+        return claude.enrol(self.paths, self.store, name, source)
 
     def test_it_parks_the_live_credential_under_the_account_uuid(self):
         identifier = self.run_enrol()
 
         self.assertEqual(identifier, self.WORK)
-        self.assertEqual(self.installed, [("grazr-" + self.WORK, "LIVE-WORK")])
+        self.assertEqual(self.store.events, [("write_parked", self.WORK, "LIVE-WORK")])
 
     def test_it_records_the_identity_needed_to_rotate_back(self):
         self.run_enrol(name="work")
@@ -1079,15 +1214,7 @@ class EnrolTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.run_enrol(name="work")
 
-        self.assertEqual(self.installed, [], "nothing parked for a refused enrolment")
-
-    def test_saving_the_live_login_uses_this_config_dir_s_keychain_item(self):
-        self.paths = self.paths._replace(service="Claude Code-credentials-deadbeef")
-        self.keychain = {"Claude Code-credentials-deadbeef": "LIVE-ISOLATED"}
-
-        self.run_enrol(name="work")
-
-        self.assertEqual(self.installed, [("grazr-" + self.WORK, "LIVE-ISOLATED")])
+        self.assertEqual(self.store.events, [], "nothing parked for a refused enrolment")
 
     def test_an_uppercase_uuid_is_accepted(self):
         """Some providers hand back uppercase. It is the same account."""
@@ -1105,36 +1232,7 @@ class EnrolTest(unittest.TestCase):
                     json.dump({"oauthAccount": {"accountUuid": bogus}}, handle)
                 with self.assertRaises(RuntimeError):
                     self.run_enrol()
-        self.assertEqual(self.installed, [])
-
-    def test_nothing_to_delete_is_not_a_failure(self):
-        """Cancelling `claude auth login` leaves no item, and security exits 44
-        for that. Reporting it would warn about a leak that never happened."""
-        isolated = os.path.join(self.directory, "enrol-tmp")
-        os.mkdir(isolated)
-
-        removed = claude.discard_isolated_login(
-            self.paths,
-            isolated,
-            spawn=lambda argv, **kw: SimpleNamespace(
-                returncode=44, stdout="", stderr="could not be found"
-            ),
-        )
-
-        self.assertTrue(removed)
-
-    def test_a_failed_keychain_delete_is_reported(self):
-        """A stranded credential nobody tracks is exactly what this cleans up."""
-        isolated = os.path.join(self.directory, "enrol-tmp")
-        os.mkdir(isolated)
-
-        removed = claude.discard_isolated_login(
-            self.paths,
-            isolated,
-            spawn=lambda argv, **kw: SimpleNamespace(returncode=1, stdout="", stderr="denied"),
-        )
-
-        self.assertFalse(removed)
+        self.assertEqual(self.store.events, [])
 
     def test_a_login_with_no_identity_yet_is_refused(self):
         """Without an accountUuid the credential would be parked under
@@ -1145,65 +1243,52 @@ class EnrolTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.run_enrol()
 
-        self.assertEqual(self.installed, [])
+        self.assertEqual(self.store.events, [])
 
     def test_it_refuses_when_there_is_no_login_to_save(self):
-        self.keychain.clear()
+        self.store.live = None
 
         with self.assertRaises(RuntimeError):
             self.run_enrol()
 
         self.assertEqual(os.listdir(self.accounts_dir), [], "no half-written account file")
 
-    def test_discarding_a_throwaway_login_removes_its_item_and_its_directory(self):
-        """The isolated login is a real credential. Leaving it in the keychain
+    def test_discarding_a_throwaway_login_removes_its_credential_and_its_directory(self):
+        """The isolated login is a real credential. Leaving it in the store
         after enrolment is a copy nobody is tracking."""
         isolated = os.path.join(self.directory, "enrol-tmp")
         os.mkdir(isolated)
-        deleted = []
+        self.store.isolated[isolated] = "LIVE-THROWAWAY"
 
-        claude.discard_isolated_login(
-            self.paths, isolated, spawn=lambda argv, **kw: deleted.append(argv)
-        )
+        removed = claude.discard_isolated_login(self.store, isolated)
 
-        self.assertEqual(
-            deleted,
-            [[
-                "security",
-                "delete-generic-password",
-                "-s",
-                claude.service_name(isolated),
-                "-a",
-                "tester",
-            ]],
-        )
+        self.assertTrue(removed)
+        self.assertEqual(self.store.isolated, {})
         self.assertFalse(os.path.exists(isolated))
 
-    def test_the_directory_goes_even_when_the_keychain_call_fails(self):
+    def test_the_directory_goes_even_when_the_store_cannot_delete(self):
         """Cleanup runs from a finally on paths where things are already going
         wrong, so it must not abandon half the job."""
         isolated = os.path.join(self.directory, "enrol-tmp")
         os.mkdir(isolated)
+        self.store.discard_result = False
 
-        def exploding_spawn(argv, **kwargs):
-            raise OSError("security is not on PATH")
-
-        removed = claude.discard_isolated_login(self.paths, isolated, spawn=exploding_spawn)
+        removed = claude.discard_isolated_login(self.store, isolated)
 
         self.assertFalse(os.path.exists(isolated))
-        self.assertFalse(removed, "a stranded keychain item must be reported, not hidden")
+        self.assertFalse(removed, "a stranded credential must be reported, not hidden")
 
     def test_an_isolated_directory_is_read_instead_of_the_live_login(self):
         isolated = os.path.join(self.directory, "enrol-tmp")
         os.mkdir(isolated)
         with open(os.path.join(isolated, ".claude.json"), "w") as handle:
             json.dump({"oauthAccount": {"accountUuid": self.PERSONAL}}, handle)
-        self.keychain[claude.service_name(isolated)] = "LIVE-PERSONAL"
+        self.store.isolated[isolated] = "LIVE-PERSONAL"
 
         identifier = self.run_enrol(name="personal", source=isolated)
 
         self.assertEqual(identifier, self.PERSONAL)
-        self.assertEqual(self.installed, [("grazr-" + self.PERSONAL, "LIVE-PERSONAL")])
+        self.assertEqual(self.store.events, [("write_parked", self.PERSONAL, "LIVE-PERSONAL")])
 
 
 class InteractiveExitTest(unittest.TestCase):
@@ -1375,17 +1460,17 @@ class PathResolutionTest(unittest.TestCase):
         with mock.patch.dict(
             os.environ, {"CLAUDE_CONFIG_DIR": isolated, "HERDR_PLUGIN_STATE_DIR": self.directory}
         ):
-            paths, _ = grazr._paths()
+            _, store, _ = grazr._paths()
 
-        self.assertEqual(paths.service, claude.service_name(isolated))
-        self.assertNotEqual(paths.service, claude.SERVICE)
+        self.assertEqual(store.service, stores.service_name(isolated))
+        self.assertNotEqual(store.service, stores.SERVICE)
 
     def test_the_ordinary_login_uses_the_unnamespaced_keychain_item(self):
         with mock.patch.dict(os.environ, {"HERDR_PLUGIN_STATE_DIR": self.directory}):
             os.environ.pop("CLAUDE_CONFIG_DIR", None)
-            paths, _ = grazr._paths()
+            _, store, _ = grazr._paths()
 
-        self.assertEqual(paths.service, claude.SERVICE)
+        self.assertEqual(store.service, stores.SERVICE)
 
     def test_an_isolated_config_dir_keeps_its_own_claude_json(self):
         """`CLAUDE_CONFIG_DIR=x claude` writes x/.claude.json, not ~/.claude.json."""
@@ -1393,7 +1478,7 @@ class PathResolutionTest(unittest.TestCase):
         with mock.patch.dict(
             os.environ, {"CLAUDE_CONFIG_DIR": isolated, "HERDR_PLUGIN_STATE_DIR": self.directory}
         ):
-            paths, _ = grazr._paths()
+            paths, _, _ = grazr._paths()
 
         self.assertEqual(paths.config_path, os.path.join(isolated, ".claude.json"))
         self.assertEqual(paths.config_dir, isolated)
@@ -1402,7 +1487,7 @@ class PathResolutionTest(unittest.TestCase):
         environment = {"HERDR_PLUGIN_STATE_DIR": self.directory}
         with mock.patch.dict(os.environ, environment, clear=False):
             os.environ.pop("CLAUDE_CONFIG_DIR", None)
-            paths, _ = grazr._paths()
+            paths, _, _ = grazr._paths()
 
         self.assertEqual(paths.config_path, os.path.expanduser("~/.claude.json"))
 
@@ -1469,8 +1554,8 @@ class ActOnDecisionTest(unittest.TestCase):
             config_path=os.path.join(self.directory, ".claude.json"),
             config_dir=self.directory,
             accounts_dir=self.directory,
-            keychain_account="tester",
         )
+        self.store = FakeStore()
         self.rotations = []
         self.notices = []
 
@@ -1486,6 +1571,7 @@ class ActOnDecisionTest(unittest.TestCase):
             return grazr.act_on(
                 decision,
                 self.paths,
+                self.store,
                 self.state_dir,
                 "uuid-work",
                 limits or [],
@@ -1503,7 +1589,7 @@ class ActOnDecisionTest(unittest.TestCase):
         self.act(("rotate", "uuid-personal"))
 
         self.assertEqual(len(self.rotations), 1)
-        self.assertEqual(self.rotations[0][1:3], ("uuid-work", "uuid-personal"))
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
         self.assertEqual(len(self.notices), 1)
 
     def test_it_reports_the_names_you_chose_not_uuids(self):
@@ -1559,7 +1645,7 @@ class ActOnDecisionTest(unittest.TestCase):
         limits = [limit(group="session", remaining=0)]
         with mock.patch.object(grazr, "notify", lambda title, body: False):
             line = grazr.act_on(
-                "exhausted", self.paths, self.state_dir, "uuid-work", limits, False
+                "exhausted", self.paths, self.store, self.state_dir, "uuid-work", limits, False
             )
 
         self.assertIn("earliest reset", line or "")
@@ -1569,7 +1655,9 @@ class ActOnDecisionTest(unittest.TestCase):
         announced would mean the user is never told at all."""
         limits = [limit(group="session", remaining=0)]
         with mock.patch.object(grazr, "notify", lambda title, body: False):
-            grazr.act_on("exhausted", self.paths, self.state_dir, "uuid-work", limits, False)
+            grazr.act_on(
+                "exhausted", self.paths, self.store, self.state_dir, "uuid-work", limits, False
+            )
 
         self.act("exhausted", limits=limits)
 
@@ -1687,7 +1775,7 @@ class HookTest(unittest.TestCase):
         self.assertEqual(self.run_hook(), 0)
 
         self.assertEqual(len(self.rotations), 1)
-        self.assertEqual(self.rotations[0][1:3], ("uuid-work", "uuid-personal"))
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
 
     def test_a_healthy_account_never_reads_the_account_files(self):
         """This runs on every status change of every pane. Reading one JSON per

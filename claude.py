@@ -1,25 +1,14 @@
 import contextlib
-import hashlib
 import json
 import os
-import re
-import shlex
 import shutil
-import subprocess
 import tempfile
 import time
-import unicodedata
 import uuid
 from collections import namedtuple
 from datetime import datetime, timezone
 
 import core
-
-SERVICE = "Claude Code-credentials"
-
-# Measured 2026-09-04. At 4096 security truncates the line, writes the
-# truncated prefix over the item, and only then exits 1.
-MAX_SECURITY_LINE = 4095
 
 # Claude treats its cached usage as stale past this age (OZr in the 2.1.260 binary).
 USAGE_STALE_AFTER_MS = 3_600_000
@@ -30,14 +19,6 @@ OAUTH_LOCK_STALE_MS = 60_000
 # Claude's saveConfigWithLock builds this path at runtime, so the name is not
 # greppable. Its stale age is unpublished, so this matches the other lock.
 CONFIG_LOCK_STALE_MS = 60_000
-
-# A swap makes three of these calls. All three at full timeout must still fit
-# inside the lock stale ages.
-SECURITY_TIMEOUT_SECONDS = 15
-
-# errSecItemNotFound. Any other non-zero exit means the keychain itself was
-# unhappy, which is not the same as the item being absent.
-ITEM_NOT_FOUND = 44
 
 
 @contextlib.contextmanager
@@ -87,28 +68,6 @@ def _oauth_refresh_lock(config_dir):
         OAUTH_LOCK_STALE_MS,
         "Claude is refreshing its token; not swapping now",
     )
-
-
-def _run_security(line, spawn=subprocess.run):
-    """Feed one command to `security -i`. The secret rides stdin, argv stays clean."""
-    try:
-        completed = spawn(
-            ["security", "-i"],
-            input=line + "\n",
-            capture_output=True,
-            text=True,
-            timeout=SECURITY_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("the keychain did not answer within %ds" % SECURITY_TIMEOUT_SECONDS)
-    if completed.returncode != 0:
-        # security echoes the tail of the blob on a truncated line, and this
-        # message reaches the plugin log.
-        # Scrub before trimming, or the cut can leave a hex fragment too short
-        # to match.
-        scrubbed = re.sub(r"[0-9a-f]{8,}", "<hex>", completed.stderr.strip())[:200]
-        raise RuntimeError("security refused the command: %s" % scrubbed)
-    return completed.stdout
 
 
 def read_limits(config, now):
@@ -173,13 +132,7 @@ def _parse_time(value):
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-# Claude keeps one keychain item per config directory, so an isolated
-# CLAUDE_CONFIG_DIR has its own.
-Paths = namedtuple(
-    "Paths",
-    "config_path config_dir accounts_dir keychain_account service",
-    defaults=(SERVICE,),
-)
+Paths = namedtuple("Paths", "config_path config_dir accounts_dir")
 
 
 def inspect(paths, now):
@@ -194,10 +147,10 @@ def inspect(paths, now):
     return active, read_limits(config, now)
 
 
-def has_parked_credential(paths, account_id):
+def has_parked_credential(store, account_id):
     """An account whose parked credential went missing cannot be rotated to,
     and the only way to find out is to look."""
-    return _read_credential(_parked_service(account_id), paths.keychain_account) is not None
+    return store.read_parked(account_id) is not None
 
 
 def load_accounts(paths, names):
@@ -257,20 +210,21 @@ def snapshot_from_json(stored):
         return None
 
 
-def enrol(paths, name, source_config_dir=None):
+def enrol(paths, store, name, source_config_dir=None):
     """Copy an existing login into grazr's keeping. Authentication is always
     Claude's own `claude auth login`; grazr never sees a password. `source_config_dir`
     is an isolated CLAUDE_CONFIG_DIR, so enrolling a second account never
     disturbs the live one."""
-    service = service_name(source_config_dir) if source_config_dir else paths.service
     config_path = (
         os.path.join(source_config_dir, ".claude.json")
         if source_config_dir
         else paths.config_path
     )
-    blob = _read_credential(service, paths.keychain_account)
+    blob = (
+        store.read_isolated(source_config_dir) if source_config_dir else store.read_live()
+    )
     if blob is None:
-        raise RuntimeError("no login found for %s; run `claude auth login` first" % service)
+        raise RuntimeError("no login found; run `claude auth login` first")
 
     with open(config_path) as handle:
         identity = (json.load(handle).get("oauthAccount") or {})
@@ -281,7 +235,7 @@ def enrol(paths, name, source_config_dir=None):
         if existing.name == name and existing.id != account_id:
             raise RuntimeError("the name %r is already used by another account" % name)
 
-    _install_credential(_parked_service(account_id), paths.keychain_account, blob)
+    store.write_parked(account_id, blob)
     _save_account(
         paths,
         account_id,
@@ -296,47 +250,31 @@ def enrol(paths, name, source_config_dir=None):
     return account_id
 
 
-def discard_isolated_login(paths, config_dir, spawn=subprocess.run):
-    """Remove the throwaway login enrolment used, keychain item and all. The
-    copy grazr keeps is the parked one; this one is an untracked duplicate.
+def discard_isolated_login(store, config_dir):
+    """Remove the throwaway login enrolment used, stored credential and all.
+    The copy grazr keeps is the parked one; this one is an untracked duplicate.
 
-    Returns whether the keychain item is gone. Never raises: it is called from
-    a finally, and masking the failure it is cleaning up after would hide the
+    Returns whether the credential is gone. Never raises: it is called from a
+    finally, and masking the failure it is cleaning up after would hide the
     real problem.
     """
-    removed = True
-    try:
-        completed = spawn(
-            [
-                "security",
-                "delete-generic-password",
-                "-s",
-                service_name(config_dir),
-                "-a",
-                paths.keychain_account,
-            ],
-            capture_output=True,
-            timeout=SECURITY_TIMEOUT_SECONDS,
-        )
-        removed = getattr(completed, "returncode", 0) in (0, ITEM_NOT_FOUND)
-    except (OSError, subprocess.TimeoutExpired):
-        removed = False
+    removed = store.discard_isolated(config_dir)
     shutil.rmtree(config_dir, ignore_errors=True)
     return removed
 
 
-def rotate(paths, active_id, next_id, snapshot):
+def rotate(paths, store, active_id, next_id, snapshot):
     """Park the live credential under the account leaving, install the one
     arriving, and move the identity with it. Every refusal happens before the
     first write; a failure part-way leaves identity and credential disagreeing,
     which reads as "unknown" and stops every hook rather than swapping wrongly."""
-    arriving = _read_credential(_parked_service(next_id), paths.keychain_account)
+    arriving = store.read_parked(next_id)
     if arriving is None:
         raise RuntimeError("no parked credential for %s; enrol it again" % next_id)
     identity = _load_account(paths, next_id)["oauthAccount"]
 
     # Both locks before the first write. The identity write comes last, but its
-    # lock can be busy too, and refusing after the keychain moved is the whole
+    # lock can be busy too, and refusing after the credential moved is the whole
     # thing this order prevents.
     with _config_lock(paths.config_path) as renew_config, _oauth_refresh_lock(
         paths.config_dir
@@ -346,17 +284,17 @@ def rotate(paths, active_id, next_id, snapshot):
             renew_config()
             renew_oauth()
 
-        leaving = _read_credential(paths.service, paths.keychain_account)
+        leaving = store.read_live()
         if leaving is None:
             raise RuntimeError("no live credential to park; refusing to swap")
         renew()
-        # The live item already holding the arriving blob means an earlier try
-        # swapped the keychain and died before the identity write. Parking again
-        # would overwrite the outgoing account's own credential.
+        # The live credential already holding the arriving blob means an earlier
+        # try swapped the store and died before the identity write. Parking
+        # again would overwrite the outgoing account's own credential.
         if leaving != arriving:
-            _install_credential(_parked_service(active_id), paths.keychain_account, leaving)
+            store.write_parked(active_id, leaving)
             renew()
-            _install_credential(paths.service, paths.keychain_account, arriving)
+            store.write_live(arriving)
             renew()
         _merge_oauth_account(paths.config_path, identity)
 
@@ -377,10 +315,6 @@ def _account_id(value):
     raise RuntimeError("that login has no usable account identity: %r" % (value,))
 
 
-def _parked_service(account_id):
-    return "grazr-%s" % account_id
-
-
 def _load_account(paths, account_id):
     with open(os.path.join(paths.accounts_dir, account_id + ".json")) as handle:
         return json.load(handle)
@@ -398,7 +332,7 @@ def _record_snapshot(paths, account_id, snapshot):
 
 
 def _save_account(paths, account_id, account):
-    """Metadata only -- never a secret. The credential lives in the keychain."""
+    """Metadata only -- never a secret. The credential lives in the store."""
     handle, temporary = tempfile.mkstemp(dir=paths.accounts_dir, prefix=".grazr-")
     try:
         with os.fdopen(handle, "w") as writer:
@@ -447,47 +381,3 @@ def _merge_oauth_account(config_path, oauth_account):
         raise
 
 
-def _read_credential(service, account, spawn=subprocess.run):
-    """The stored blob, or None when there is no such item. Service and account
-    are not secrets, so argv is fine here; the blob comes back on stdout."""
-    try:
-        completed = spawn(
-            ["security", "find-generic-password", "-s", service, "-a", account, "-w"],
-            capture_output=True,
-            text=True,
-            timeout=SECURITY_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("the keychain did not answer within %ds" % SECURITY_TIMEOUT_SECONDS)
-    if completed.returncode != 0:
-        return None
-    stored = completed.stdout.strip()
-    try:
-        return bytes.fromhex(stored).decode()
-    except (ValueError, UnicodeDecodeError):
-        return stored
-
-
-def _install_credential(service, account, blob, run=None):
-    # `security -i` splits its line into tokens and the live service name has a
-    # space, so the names need quoting. The hex payload never does.
-    line = "add-generic-password -U -s %s -a %s -X %s" % (
-        shlex.quote(service),
-        shlex.quote(account),
-        blob.encode().hex(),
-    )
-    size = len(line.encode())
-    if size > MAX_SECURITY_LINE:
-        raise ValueError(
-            "credential for %s needs a %d byte security line, over the %d byte limit; "
-            "installing it would truncate and destroy the item"
-            % (service, size, MAX_SECURITY_LINE)
-        )
-    (run or _run_security)(line)
-
-
-def service_name(config_dir=None):
-    if config_dir is None:
-        return SERVICE
-    normalized = unicodedata.normalize("NFC", config_dir)
-    return "%s-%s" % (SERVICE, hashlib.sha256(normalized.encode()).hexdigest()[:8])

@@ -2,7 +2,8 @@
 
 Entry points: hook (a Herdr event), enrol and status (popup panes).
 All Herdr and filesystem I/O lives here; Claude knowledge lives in claude.py;
-the decision itself is core.decide.
+where credentials are kept lives in stores.py; the decision itself is
+core.decide.
 """
 
 import contextlib
@@ -20,6 +21,7 @@ from datetime import datetime, timezone
 
 import claude
 import core
+import stores
 
 Config = namedtuple("Config", "thresholds accounts enabled dry_run")
 
@@ -75,7 +77,7 @@ def notify(title, body, spawn=subprocess.run):
         return False
 
 
-def act_on(decision, paths, state_dir, active_id, limits, dry_run, accounts=(), now=None):
+def act_on(decision, paths, store, state_dir, active_id, limits, dry_run, accounts=(), now=None):
     """Carry out what core.decide concluded, and report it. Returns the line
     that goes to stdout, which Herdr keeps in `herdr plugin log`."""
     if decision == "stay":
@@ -116,7 +118,7 @@ def act_on(decision, paths, state_dir, active_id, limits, dry_run, accounts=(), 
     if dry_run:
         return "DRY_RUN: would rotate %s -> %s" % (name_of(active_id), name_of(next_id))
 
-    claude.rotate(paths, active_id, next_id, limits)
+    claude.rotate(paths, store, active_id, next_id, limits)
     line = "rotated %s -> %s" % (name_of(active_id), name_of(next_id))
     notify(
         "grazr: now on %s" % name_of(next_id),
@@ -299,9 +301,8 @@ def _paths():
             config_path=config_path,
             config_dir=config_dir,
             accounts_dir=accounts_dir,
-            keychain_account=getpass.getuser(),
-            service=claude.service_name(isolated) if isolated else claude.SERVICE,
         ),
+        stores.KeychainStore(stores.service_name(isolated), getpass.getuser()),
         state_dir,
     )
 
@@ -321,7 +322,7 @@ def hook():
     if not config.enabled:
         return 0
 
-    paths, state_dir = _paths()
+    paths, store, state_dir = _paths()
     now = datetime.now(timezone.utc)
     active, limits = claude.inspect(paths, now)
     if active is None:
@@ -340,7 +341,7 @@ def hook():
         accounts = claude.load_accounts(paths, config.accounts)
         decision = core.decide(limits, active, accounts, now, config.thresholds)
         line = act_on(
-            decision, paths, state_dir, active, limits, config.dry_run, accounts
+            decision, paths, store, state_dir, active, limits, config.dry_run, accounts
         )
 
     if line:
@@ -388,7 +389,7 @@ def _dispatch(argv):
 
 
 def status():
-    paths, state_dir = _paths()
+    paths, store, state_dir = _paths()
     config = load_config(_config_path())
     now = datetime.now(timezone.utc)
     active, limits = claude.inspect(paths, now)
@@ -401,7 +402,7 @@ def status():
     accounts = claude.load_accounts(paths, config.accounts)
     for account in accounts:
         marker = "*" if account.id == active else " "
-        parked = "parked" if claude.has_parked_credential(paths, account.id) else "NO CREDENTIAL"
+        parked = "parked" if claude.has_parked_credential(store, account.id) else "NO CREDENTIAL"
         print("%s %-16s %-14s %s" % (marker, account.name, parked, _describe(account.snapshot)))
 
     for name in config.accounts:
@@ -453,9 +454,9 @@ def enrol():
         print("closed, nothing changed")
         return 0
 
-    paths, _ = _paths()
+    paths, store, _ = _paths()
     if choice == "s":
-        return _enrol_from(paths, None)
+        return _enrol_from(paths, store, None)
 
     source = os.path.abspath(
         os.path.join(paths.accounts_dir, "..", "enrol-%d" % os.getpid())
@@ -472,19 +473,19 @@ def enrol():
         if login.returncode != 0:
             print("login did not complete")
             return 1
-        return _enrol_from(paths, source)
+        return _enrol_from(paths, store, source)
     finally:
-        if not claude.discard_isolated_login(paths, source):
+        if not claude.discard_isolated_login(store, source):
             print("warning: could not remove the throwaway login from the keychain")
 
 
-def _enrol_from(paths, source):
+def _enrol_from(paths, store, source):
     name = input("account name: ").strip()
     if not name:
         print("a name is required")
         return 1
     try:
-        identifier = claude.enrol(paths, name, source)
+        identifier = claude.enrol(paths, store, name, source)
     except RuntimeError as error:
         print("could not enrol: %s" % error)
         return 1
