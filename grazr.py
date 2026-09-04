@@ -91,6 +91,13 @@ def act_on(decision, paths, state_dir, active_id, limits, dry_run, accounts=(), 
         )
         return line if announced else None
 
+    if decision == "unenrolled":
+        line = "nothing to rotate to; enrol a second account and list it in ACCOUNTS"
+        announced = _announce_once(
+            state_dir, "unenrolled", "Grazr: no second account", line
+        )
+        return line if announced else None
+
     if decision == "exhausted":
         soonest = _soonest_reset(
             now or datetime.now(timezone.utc),

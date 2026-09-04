@@ -21,12 +21,15 @@ def decide(limits, active, accounts, now, thresholds):
     if limits == "locked":
         # Moving off a restricted account is circumventing the restriction.
         return "locked"
+    considered = 0
     for candidate in accounts:
         if candidate.id == active or candidate.snapshot == "locked":
             continue
+        considered += 1
         if candidate.snapshot is None or _has_headroom(candidate.snapshot, now, thresholds):
             return "rotate", candidate.id
-    return "exhausted"
+    # "Every account is spent" would be a claim about accounts that do not exist.
+    return "exhausted" if considered else "unenrolled"
 
 
 def _has_headroom(limits, now, thresholds):

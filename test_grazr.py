@@ -37,6 +37,11 @@ def account_named(name, identifier, snapshot=None):
     return Account(id=identifier, name=name, snapshot=snapshot)
 
 
+def spent_account():
+    """Exists but has nothing left, so "exhausted" is the honest answer."""
+    return account("spent", snapshot=[limit(group="session", remaining=0, resets_at=LATER)])
+
+
 class DecideTest(unittest.TestCase):
     def test_unknown_limits_stay(self):
         self.assertEqual(
@@ -52,11 +57,17 @@ class DecideTest(unittest.TestCase):
             "stay",
         )
 
-    def test_limit_below_threshold_with_no_other_account_is_exhausted(self):
+    def test_limit_below_threshold_with_a_spent_alternative_is_exhausted(self):
         limits = [limit(group="session", remaining=14)]
 
         self.assertEqual(
-            decide(limits, active="work", accounts=[], now=NOW, thresholds=THRESHOLDS),
+            decide(
+                limits,
+                active="work",
+                accounts=[spent_account()],
+                now=NOW,
+                thresholds=THRESHOLDS,
+            ),
             "exhausted",
         )
 
@@ -131,6 +142,47 @@ class LockedAccountTest(unittest.TestCase):
         )
 
 
+class NothingToRotateToTest(unittest.TestCase):
+    """Claiming every account is spent is false when none is enrolled."""
+
+    def test_no_enrolled_accounts_is_not_the_same_as_all_spent(self):
+        limits = [limit(group="session", remaining=1)]
+
+        self.assertEqual(
+            decide(limits, active="work", accounts=[], now=NOW, thresholds=THRESHOLDS),
+            "unenrolled",
+        )
+
+    def test_only_the_active_account_enrolled_is_also_unenrolled(self):
+        limits = [limit(group="session", remaining=1)]
+
+        self.assertEqual(
+            decide(
+                limits,
+                active="work",
+                accounts=[account("work")],
+                now=NOW,
+                thresholds=THRESHOLDS,
+            ),
+            "unenrolled",
+        )
+
+    def test_spent_candidates_are_still_exhausted(self):
+        limits = [limit(group="session", remaining=1)]
+        spent = account("spent", snapshot=[limit(group="session", remaining=0, resets_at=LATER)])
+
+        self.assertEqual(
+            decide(
+                limits,
+                active="work",
+                accounts=[account("work"), spent],
+                now=NOW,
+                thresholds=THRESHOLDS,
+            ),
+            "exhausted",
+        )
+
+
 class ThresholdBoundaryTest(unittest.TestCase):
     def test_fires_only_below_the_threshold(self):
         for remaining, expected in ((16, "stay"), (15, "stay"), (14, "exhausted")):
@@ -139,7 +191,7 @@ class ThresholdBoundaryTest(unittest.TestCase):
                     decide(
                         [limit(group="session", remaining=remaining)],
                         active="work",
-                        accounts=[],
+                        accounts=[spent_account()],
                         now=NOW,
                         thresholds=THRESHOLDS,
                     ),
@@ -151,7 +203,7 @@ class ThresholdBoundaryTest(unittest.TestCase):
             decide(
                 [limit(group="session", remaining=0)],
                 active="work",
-                accounts=[],
+                accounts=[spent_account()],
                 now=NOW,
                 thresholds=THRESHOLDS,
             ),
@@ -169,7 +221,13 @@ class TwoWeeklyLimitsTest(unittest.TestCase):
         for order in ([overall, per_model], [per_model, overall]):
             with self.subTest(first=order[0].kind):
                 self.assertEqual(
-                    decide(order, active="work", accounts=[], now=NOW, thresholds=THRESHOLDS),
+                    decide(
+                        order,
+                        active="work",
+                        accounts=[spent_account()],
+                        now=NOW,
+                        thresholds=THRESHOLDS,
+                    ),
                     "exhausted",
                 )
 
@@ -485,7 +543,9 @@ class ReadLimitsTest(unittest.TestCase):
 
         self.assertEqual(limits[0].resets_at, LATER)
         self.assertEqual(
-            decide(limits, active="work", accounts=[], now=NOW, thresholds=THRESHOLDS),
+            decide(
+                limits, active="work", accounts=[spent_account()], now=NOW, thresholds=THRESHOLDS
+            ),
             "exhausted",
         )
 
@@ -1421,6 +1481,13 @@ class ActOnDecisionTest(unittest.TestCase):
     def test_a_dry_run_decides_but_never_swaps(self):
         self.act(("rotate", "uuid-personal"), dry_run=True)
 
+        self.assertEqual(self.rotations, [])
+
+    def test_having_nothing_enrolled_says_so_and_points_at_the_fix(self):
+        line = self.act("unenrolled")
+
+        self.assertIn("enrol", line)
+        self.assertNotIn("spent", line)
         self.assertEqual(self.rotations, [])
 
     def test_a_locked_account_is_reported_and_never_rotated_away_from(self):
