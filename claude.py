@@ -47,8 +47,16 @@ def _proper_lock(path, stale_ms, busy_message):
     except FileExistsError:
         if (time.time() - os.path.getmtime(path)) * 1000 < stale_ms:
             raise RuntimeError(busy_message)
-        os.rmdir(path)
-        os.mkdir(path)
+        # Another process may be breaking the same lock. The loser must back
+        # off rather than assume it holds it too.
+        try:
+            os.rmdir(path)
+        except FileNotFoundError:
+            pass
+        try:
+            os.mkdir(path)
+        except FileExistsError:
+            raise RuntimeError(busy_message)
     held = [os.path.getmtime(path)]
 
     def renew():

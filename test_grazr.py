@@ -636,6 +636,45 @@ class OAuthRefreshLockTest(unittest.TestCase):
 
         self.assertFalse(os.path.exists(self.lock_path))
 
+    def make_stale(self):
+        os.mkdir(self.lock_path)
+        long_ago = time.time() - (claude.OAUTH_LOCK_STALE_MS / 1000) - 10
+        os.utime(self.lock_path, (long_ago, long_ago))
+
+    def test_losing_the_race_to_break_a_stale_lock_backs_off(self):
+        """Another process broke the same lock first and now holds it. That
+        must read as busy, not as a traceback."""
+        self.make_stale()
+        real_mkdir = os.mkdir
+
+        def mkdir_taken(path, *arguments):
+            if path == self.lock_path and os.path.exists(path):
+                raise FileExistsError(path)
+            if path == self.lock_path:
+                real_mkdir(path)
+                raise FileExistsError(path)
+            return real_mkdir(path, *arguments)
+
+        with mock.patch("os.mkdir", mkdir_taken):
+            with self.assertRaises(RuntimeError):
+                with claude._oauth_refresh_lock(self.config_dir):
+                    self.fail("the loser must not also hold the lock")
+
+    def test_a_lock_removed_by_someone_else_mid_break_is_not_a_crash(self):
+        """The stale lock vanished between the check and the removal."""
+        self.make_stale()
+        real_rmdir = os.rmdir
+
+        def rmdir_already_gone(path, *arguments):
+            if path == self.lock_path:
+                real_rmdir(path)
+                raise FileNotFoundError(path)
+            return real_rmdir(path, *arguments)
+
+        with mock.patch("os.rmdir", rmdir_already_gone):
+            with claude._oauth_refresh_lock(self.config_dir):
+                self.assertTrue(os.path.isdir(self.lock_path))
+
     def test_a_slow_swap_cannot_outlive_its_own_lock(self):
         """A lock is judged by its mtime, so three slow keychain calls must not
         add up past the stale age, or Claude takes the lock mid-swap."""
