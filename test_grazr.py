@@ -772,6 +772,13 @@ class SnapshotRoundTripTest(unittest.TestCase):
 
         self.assertEqual(restored, limits)
 
+    def test_an_account_file_edited_by_hand_does_not_break_the_hook(self):
+        """The account store is enumerated on the rotate path, so one bad file
+        would otherwise take out rotation for every account."""
+        for garbage in ("SNAPSHOT", 42, {"kind": "session"}, [{"nope": 1}]):
+            with self.subTest(garbage=garbage):
+                self.assertIsNone(claude.snapshot_from_json(garbage))
+
     def test_locked_survives_a_round_trip(self):
         self.assertEqual(claude.snapshot_from_json(claude.snapshot_to_json("locked")), "locked")
 

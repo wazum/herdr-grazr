@@ -200,18 +200,23 @@ def snapshot_to_json(snapshot):
 
 
 def snapshot_from_json(stored):
+    """Anything unrecognised reads as never parked. A hand-edited account file
+    must not take rotation out for every account."""
     if stored is None or stored == "locked":
         return stored
-    return [
-        core.Limit(
-            kind=entry["kind"],
-            scope=entry["scope"],
-            group=entry["group"],
-            remaining=entry["remaining"],
-            resets_at=_parse_time(entry["resets_at"]),
-        )
-        for entry in stored
-    ]
+    try:
+        return [
+            core.Limit(
+                kind=entry["kind"],
+                scope=entry["scope"],
+                group=entry["group"],
+                remaining=entry["remaining"],
+                resets_at=_parse_time(entry["resets_at"]),
+            )
+            for entry in stored
+        ]
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def enrol(paths, name, source_config_dir=None):
