@@ -421,7 +421,11 @@ def status():
     if limits == "unknown":
         print("  (usage describes another account or is over an hour old)")
     if active and not any(account.id == active for account in accounts):
-        print("  this login is not enrolled; grazr can rotate away but not back")
+        # Enrolled but left out of ACCOUNTS is the likelier mistake, and calling
+        # that "not enrolled" sends you off to enrol it a second time.
+        enrolled = any(account.id == active for account in claude.load_accounts(paths, []))
+        print("  this login is %s; grazr can rotate away but not back"
+              % ("enrolled but missing from ACCOUNTS" if enrolled else "not enrolled"))
 
     last = _last_decision(state_dir)
     if last:
