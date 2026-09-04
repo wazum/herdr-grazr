@@ -88,8 +88,8 @@ def act_on(decision, paths, state_dir, active_id, limits, dry_run, accounts=()):
         return line if announced else None
 
     if decision == "exhausted":
-        soonest = _soonest_reset(limits)
-        line = "every account is spent; earliest reset %s" % (soonest or "unknown")
+        soonest = _soonest_reset(limits, *(entry.snapshot for entry in accounts))
+        line = "every account is spent, earliest reset %s" % (soonest or "unknown")
         announced = _announce_once(
             state_dir, "exhausted:%s" % soonest, "Grazr: no headroom left", line
         )
@@ -108,12 +108,16 @@ def act_on(decision, paths, state_dir, active_id, limits, dry_run, accounts=()):
     return line
 
 
-def _soonest_reset(limits):
-    """When the first window reopens. `limits` may be a sentinel string rather
-    than a list, and a limit may carry no reset time at all."""
-    if not isinstance(limits, list):
-        return None
-    times = [entry.resets_at for entry in limits if entry.resets_at]
+def _soonest_reset(*snapshots):
+    """When the first window anywhere reopens. Each snapshot may be a sentinel
+    string rather than a list, and a limit may carry no reset time at all."""
+    times = [
+        entry.resets_at
+        for snapshot in snapshots
+        if isinstance(snapshot, list)
+        for entry in snapshot
+        if entry.resets_at
+    ]
     return min(times).isoformat() if times else None
 
 

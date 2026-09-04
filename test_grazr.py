@@ -1246,6 +1246,20 @@ class ActOnDecisionTest(unittest.TestCase):
 
         self.assertEqual(len(self.notices), 1, "must announce again after a suppressed toast")
 
+    def test_the_reset_it_names_covers_every_account_not_just_the_active_one(self):
+        """When nothing has headroom, the useful answer is when the first
+        account becomes usable, which may not be the one you are on."""
+        active = [limit(group="session", remaining=0, resets_at=LATER)]
+        others = [
+            account_named("spent", "uuid-spent", snapshot=[
+                limit(group="session", remaining=0, resets_at=EARLIER)
+            ])
+        ]
+
+        line = self.act("exhausted", limits=active, accounts=others)
+
+        self.assertIn(EARLIER.isoformat(), line)
+
     def test_the_soonest_reset_is_the_earliest_not_the_latest(self):
         limits = [
             limit(group="weekly", remaining=0, resets_at=LATER),
