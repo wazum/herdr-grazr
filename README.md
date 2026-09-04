@@ -128,26 +128,26 @@ toast still leaves the swap in `herdr plugin log`.
 
 ## Swap on demand
 
-Sometimes you do not want to wait for the threshold. The session shows 93%
-used, the task ahead is long, and you would rather be on a fresh account before
-it starts. *grazr* ships an action for that. Bind it to a key in
+Sometimes you do not want to wait for the threshold. The session is at 93% and
+a long task is about to start, so you would rather be on a fresh account first.
+*grazr* has an action for that. Bind it to a key in
 `~/.config/herdr/config.toml`:
 
 ```toml
 [[keys.command]]
-key = "prefix+g"
+key = "prefix+shift+s"
 type = "plugin_action"
 command = "wazum.grazr.swap"
 description = "grazr: swap account now"
 ```
 
 Then run `herdr server reload-config`. The key moves you to the first account
-in `ACCOUNTS` that has headroom, the same choice the automatic path would make,
-and announces it in the same toast. It does not check whether the account you
-are leaving still has room, because you asked for the move. `DRY_RUN=1` applies here too, and
-`ENABLED=0` does not, because that flag only quiets the automatic path. If
-every other account is spent, the key does nothing and says so in
-`herdr plugin log`.
+in `ACCOUNTS` with headroom, which is the choice the automatic path would make,
+and announces it in the usual toast. It does not ask whether the account you
+are leaving still has room. You asked for the move, so it moves. `DRY_RUN=1`
+applies here too. `ENABLED=0` does not, since that flag only quiets the
+automatic path. If every other account is spent, the key does nothing and says
+so in `herdr plugin log`.
 
 ## After a swap
 

@@ -8,10 +8,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- A `swap` action for a swap you ask for, bound to a Herdr key of your choice.
-  It moves to the first account in `ACCOUNTS` with headroom without waiting
-  for the threshold, honours `DRY_RUN`, and ignores `ENABLED`, which gates the
-  automatic path only.
+- A `swap` action, for a Herdr key of your choice, that moves to the first
+  account in `ACCOUNTS` with headroom without waiting for the threshold. It
+  honours `DRY_RUN` and ignores `ENABLED`, which gates the automatic path only.
 
 ## 0.1.1 - 2026-09-04
 
