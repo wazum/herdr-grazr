@@ -1785,6 +1785,18 @@ class ActOnDecisionTest(unittest.TestCase):
 
         self.assertEqual(len(self.notices), 1, "must announce again after a suppressed toast")
 
+    def test_a_rotation_clears_the_situation_it_resolved(self):
+        """The marker is the dedupe key as well as the status line. Leaving
+        "unenrolled" on it after a rotation means the day you really are out of
+        accounts again, nobody is ever told."""
+        first = self.act("unenrolled")
+        self.act(("rotate", "uuid-personal"))
+        again = self.act("unenrolled")
+
+        self.assertTrue(first)
+        self.assertTrue(again, "the situation is new again after a rotation")
+        self.assertEqual(len(self.notices), 3)
+
     def test_the_reset_it_names_covers_every_account_not_just_the_active_one(self):
         """When nothing has headroom, the useful answer is when the first
         account becomes usable, which may not be the one you are on."""

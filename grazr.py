@@ -120,10 +120,13 @@ def act_on(decision, paths, store, state_dir, active_id, limits, dry_run, accoun
 
     claude.rotate(paths, store, active_id, next_id, limits)
     line = "rotated %s -> %s" % (name_of(active_id), name_of(next_id))
-    notify(
+    shown = notify(
         "grazr: now on %s" % name_of(next_id),
         "Remote Control needs /remote-control per pane",
     )
+    # The marker is the dedupe key too. Leaving the situation this rotation
+    # just resolved on it would silence that situation the next time it is real.
+    _write_marker(os.path.join(state_dir, "last_notice"), line, shown)
     return line
 
 
