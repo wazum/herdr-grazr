@@ -688,6 +688,17 @@ class RotateTest(unittest.TestCase):
             "the outgoing account's own credential must survive the retry",
         )
 
+    def test_rotating_away_from_an_unenrolled_account_still_completes(self):
+        """You can be logged into an account grazr never enrolled. The swap
+        works, so it must be reported, not lost to a traceback afterwards."""
+        os.unlink(os.path.join(self.accounts_dir, "uuid-work.json"))
+
+        self.run_rotate()
+
+        self.assertEqual(self.keychain["Claude Code-credentials"], "PARKED-PERSONAL")
+        with open(self.config_path) as handle:
+            self.assertEqual(json.load(handle)["oauthAccount"]["accountUuid"], "uuid-personal")
+
     def test_a_lock_held_by_claude_aborts_before_any_write(self):
         os.mkdir(os.path.join(self.directory, ".oauth_refresh.lock"))
 

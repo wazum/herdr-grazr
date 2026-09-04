@@ -292,7 +292,13 @@ def _load_account(paths, account_id):
 
 
 def _record_snapshot(paths, account_id, snapshot):
-    account = _load_account(paths, account_id)
+    """Remember what the outgoing account had left. The swap has already
+    happened by now, so an account we never enrolled is nothing to record
+    against, not a reason to fail."""
+    try:
+        account = _load_account(paths, account_id)
+    except (OSError, ValueError):
+        return
     account["snapshot"] = snapshot_to_json(snapshot)
     _save_account(paths, account_id, account)
 
