@@ -1673,6 +1673,18 @@ class HookTest(unittest.TestCase):
         self.assertEqual(self.run_hook(), 0)
         self.assertEqual(self.rotations, [])
 
+    def test_taking_the_lock_does_not_truncate_the_file(self):
+        """A pane that loses the race must not have written to it on the way."""
+        marker = os.path.join(self.state_dir, "rotate.lock")
+        with open(marker, "w") as handle:
+            handle.write("held by someone")
+
+        with grazr._rotation_lock(self.state_dir):
+            pass
+
+        with open(marker) as handle:
+            self.assertEqual(handle.read(), "held by someone")
+
     def test_a_pane_that_loses_the_race_does_not_rotate_as_well(self):
         """Two panes idle at the same instant. The loser must stay, or it parks
         over what the winner just wrote."""

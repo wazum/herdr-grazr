@@ -325,7 +325,9 @@ def hook():
 def _rotation_lock(state_dir):
     """One pane at a time past the threshold. Several panes go idle together
     when a long turn ends, and each would otherwise park over the others."""
-    handle = open(os.path.join(state_dir, "rotate.lock"), "w")
+    # "w" would truncate before flock is even attempted, so a pane that goes on
+    # to lose the race still writes to the file.
+    handle = open(os.path.join(state_dir, "rotate.lock"), "a")
     try:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
