@@ -341,6 +341,14 @@ def rotate(paths, store, active_id, next_id, snapshot):
     arriving, and move the identity with it. Every refusal happens before the
     first write; a failure part-way leaves identity and credential disagreeing,
     which reads as "unknown" and stops every hook rather than swapping wrongly."""
+    override = settings_auth_override(paths.config_dir)
+    if override:
+        raise RuntimeError(
+            "%s in settings.json puts Claude on API-key auth, so swapping the "
+            "saved claude.ai login would change nothing; unset it to let grazr "
+            "rotate" % override
+        )
+
     arriving = store.read_parked(next_id)
     if arriving is None:
         raise RuntimeError("no parked credential for %s; enrol it again" % next_id)
@@ -378,6 +386,33 @@ def rotate(paths, store, active_id, next_id, snapshot):
         _merge_oauth_account(paths.config_path, identity)
 
     _record_snapshot(paths, active_id, snapshot)
+
+
+def settings_auth_override(config_dir):
+    """The setting in settings.json that puts Claude on API-key auth, or None.
+
+    Claude reaches every one of these before the saved claude.ai login, so a
+    swap underneath one changes nothing while the log says it worked. Its own
+    words in the 2.1.261 binary: "ANTHROPIC_API_KEY is set, so this session is
+    using API-key auth", and the same for the other two. `env` there is
+    "Environment variables to set for Claude Code sessions", so a key parked in
+    that block counts as set.
+    """
+    try:
+        with open(os.path.join(config_dir, "settings.json")) as handle:
+            settings = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(settings, dict):
+        return None
+    if str(settings.get("apiKeyHelper") or "").strip():
+        return "apiKeyHelper"
+    env = settings.get("env")
+    if isinstance(env, dict):
+        for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+            if str(env.get(key) or "").strip():
+                return "env.%s" % key
+    return None
 
 
 def _carry_shared_keys(arriving, leaving):

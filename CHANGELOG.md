@@ -12,6 +12,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   logins in the same store as the account credential, and they are minted
   against each server rather than against an account, so they now stay put
   while the login around them changes.
+- An `apiKeyHelper`, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` in
+  `settings.json` puts Claude on API-key auth, so swapping the saved
+  claude.ai login under it changes nothing. grazr used to report those swaps
+  as though they had worked. It now stops and names the setting to unset.
 - Carrying the MCP logins can make a credential too long for the macOS
   keychain, which refuses one rather than truncating it. The swap now goes
   ahead without them instead of failing.

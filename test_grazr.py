@@ -1258,6 +1258,25 @@ class RotateTest(unittest.TestCase):
             "the MCP logins belong to no account, so a swap must carry them over",
         )
 
+    def test_an_auth_setting_stops_the_swap_before_it_pretends_to_work(self):
+        """Any of these puts Claude on API-key auth, so swapping the saved
+        claude.ai login underneath one changes nothing while the log and the
+        toast say it worked. The refusal names the setting to unset."""
+        for settings in (
+            {"apiKeyHelper": "/usr/local/bin/mint-key"},
+            {"env": {"ANTHROPIC_API_KEY": "sk-ant-x"}},
+            {"env": {"ANTHROPIC_AUTH_TOKEN": "tok"}},
+        ):
+            with self.subTest(settings=settings):
+                with open(os.path.join(self.directory, "settings.json"), "w") as handle:
+                    json.dump(settings, handle)
+
+                with self.assertRaises(RuntimeError):
+                    self.run_rotate()
+
+                self.assertEqual(self.store.events, [])
+                self.assertEqual(self.store.live, "LIVE-WORK")
+
     def test_a_carry_too_big_for_the_store_still_completes_the_swap(self):
         """The keychain refuses a credential past its line length rather than
         truncating it, and carrying the MCP logins is what can push it over.
@@ -2186,6 +2205,22 @@ class HookTest(EnrolledPairFixture):
                 ),
                 handle,
             )
+
+    def test_an_auth_setting_is_reported_once_not_on_every_turn_end(self):
+        """A settings.json auth key is a standing situation, like a restricted
+        account, rather than news each time a pane goes idle. Refusing inside
+        the swap said it again on every one of them."""
+        with open(os.path.join(self.claude_dir, "settings.json"), "w") as handle:
+            json.dump({"env": {"ANTHROPIC_API_KEY": "sk-ant-x"}}, handle)
+        event = json.dumps({"data": {"agent": "claude", "agent_status": "idle"}})
+
+        _, first = self.invoke(grazr.hook, HERDR_PLUGIN_EVENT_JSON=event)
+        _, again = self.invoke(grazr.hook, HERDR_PLUGIN_EVENT_JSON=event)
+
+        self.assertIn("ANTHROPIC_API_KEY", first)
+        self.assertEqual(again, "", "the second turn end has nothing new to say")
+        self.assertEqual(self.rotations, [], "a swap under an auth key moves nothing")
+        self.assertEqual(len(self.notices), 1)
 
     def test_a_reading_too_old_to_trust_is_replaced_by_a_live_one(self):
         self.write_stale_usage(percent=20)

@@ -124,7 +124,19 @@ def act_on(decision, paths, store, state_dir, active_id, limits, dry_run, accoun
         )
         return line if announced else None
 
-    _, next_id = decision
+    kind, payload = decision
+
+    if kind == "override":
+        line = (
+            "%s in settings.json puts Claude on API-key auth, so a swap changes nothing"
+            % payload
+        )
+        announced = _announce_once(
+            state_dir, "override:%s" % payload, "grazr: not rotating", line
+        )
+        return line if announced else None
+
+    next_id = payload
     if dry_run:
         return "DRY_RUN: would rotate %s -> %s" % (name_of(active_id), name_of(next_id))
 
@@ -372,6 +384,13 @@ def hook():
             active, limits = swapped_to, its_limits
         accounts = claude.load_accounts(paths, config.accounts)
         decision = core.decide(limits, active, accounts, now, config.thresholds)
+        # Only a decision to move pays for the settings.json read, so the common
+        # path is unchanged. rotate refuses this too, but a raised error suits
+        # the person who just pressed a key, not every turn end of every pane.
+        if isinstance(decision, tuple):
+            override = claude.settings_auth_override(paths.config_dir)
+            if override:
+                decision = ("override", override)
         line = act_on(
             decision, paths, store, state_dir, active, limits, config.dry_run, accounts, now
         )
