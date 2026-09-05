@@ -516,7 +516,7 @@ def hook(runtime=None):
         # then the reading above describes an account we already left. Only
         # that case is worth re-reading for: otherwise the live reading taken
         # above is the better of the two.
-        swapped_to, its_limits = claude.inspect(paths, now)
+        swapped_to, its_limits, _ = claude.inspect_reading(paths, now)
         if swapped_to != active:
             active, limits = swapped_to, its_limits
         enrolled = accounts.load(paths, config.accounts)
@@ -697,7 +697,7 @@ def tag(runtime=None):
     carries none and tags every pane, which is what you press after adding the
     sidebar row."""
     paths = (runtime or _runtime()).paths
-    active, _ = claude.inspect(paths, datetime.now(timezone.utc))
+    active, _, _ = claude.inspect_reading(paths, datetime.now(timezone.utc))
     if active is None:
         return 0
     named = next(
@@ -721,7 +721,7 @@ def swap(runtime=None):
     with _rotation_lock(state_dir) as acquired:
         if not acquired:
             return _refuse_swap("busy rotating already, try again in a moment")
-        active, limits = claude.inspect(paths, now)
+        active, limits, _ = claude.inspect_reading(paths, now)
         if active is None:
             return _refuse_swap("not logged in, nothing to swap from")
         enrolled = accounts.load(paths, config.accounts)
@@ -752,7 +752,7 @@ def _refuse_swap(reason):
 def status(runtime=None):
     paths, store, state_dir, config = runtime or _runtime()
     now = datetime.now(timezone.utc)
-    active, limits = claude.inspect(paths, now)
+    active, limits, _ = claude.inspect_reading(paths, now)
 
     print("config: %s" % _config_path())
     print("thresholds: session %d%% / weekly %d%% remaining%s\n"

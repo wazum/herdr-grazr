@@ -1566,7 +1566,7 @@ class InspectTest(unittest.TestCase):
         self.assertEqual(claude.inspect_reading(self.paths, now=NOW), (None, "unknown", None))
 
     def test_it_reports_the_active_account_and_its_headroom(self):
-        active, limits = claude.inspect(self.paths, now=NOW)
+        active, limits, _ = claude.inspect_reading(self.paths, now=NOW)
 
         self.assertEqual(active, "uuid-work")
         self.assertEqual(limits[0].remaining, 20)
@@ -1577,10 +1577,10 @@ class InspectTest(unittest.TestCase):
         with open(self.config_path, "w") as handle:
             handle.write('{"oauthAccount": {"accountUu')
 
-        self.assertEqual(claude.inspect(self.paths, now=NOW), (None, "unknown"))
+        self.assertEqual(claude.inspect_reading(self.paths, now=NOW), (None, "unknown", None))
 
         os.unlink(self.config_path)
-        self.assertEqual(claude.inspect(self.paths, now=NOW), (None, "unknown"))
+        self.assertEqual(claude.inspect_reading(self.paths, now=NOW), (None, "unknown", None))
 
     def test_accounts_come_back_in_the_configured_preference_order(self):
         self.write_account("uuid-work", {"name": "work"})

@@ -198,16 +198,11 @@ def _is_locked(utilization):
 Paths = namedtuple("Paths", "config_path config_dir accounts_dir")
 
 
-def inspect(paths, now):
-    """Who Claude is logged in as, and what that account has left."""
-    active, limits, _ = inspect_reading(paths, now)
-    return active, limits
-
-
 def inspect_reading(paths, now):
-    """The same, plus the millisecond stamp Claude wrote on the reading. Only
-    the burn correction needs the stamp, and measuring against it rather than
-    the wall clock is what keeps a rate honest."""
+    """Who Claude is logged in as, what that account has left, and the
+    millisecond stamp Claude wrote on the reading. Only the burn correction
+    needs the stamp, and measuring against it rather than the wall clock is
+    what keeps a rate honest."""
     try:
         with open(paths.config_path) as handle:
             config = json.load(handle)
