@@ -85,7 +85,7 @@ REMAINING_WEEKLY=20      # weekly windows get more margin, because losing one co
 ACCOUNTS="work personal" # preference order, first with headroom wins
 ENABLED=1
 DRY_RUN=0                # 1 = log the decision, do not swap
-LIVE_USAGE_BELOW=50      # below this much headroom, ask instead of guessing
+LIVE_USAGE_BELOW=30      # below this much headroom, ask instead of guessing
 ```
 
 Start with `DRY_RUN=1` for a day. Decisions show up in `herdr plugin log`.
@@ -103,6 +103,14 @@ Claude asks, using the credential it already keeps, and never more than once
 every five minutes however many panes go idle together. Above that mark it does
 not reach for the network at all. Set it to `0` to turn the call off and leave
 *grazr* with whatever Claude last wrote down.
+
+The endpoint is undocumented, so *grazr* works to leave it alone. It never asks
+when no other account could take over, since the answer could not change
+anything. And it reads the age Claude stamped on the reading against the pace
+the last two readings imply, so a number that only looks safe because it is
+half an hour old still earns a call, while a fresh one above the mark costs
+nothing. That correction decides when to ask, never when to rotate: a swap is
+always made against a reading, never against an estimate.
 
 ### Turn Herdr's toasts on
 

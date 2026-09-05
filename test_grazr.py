@@ -17,7 +17,7 @@ from unittest import mock
 import claude
 import grazr
 import stores
-from core import Account, Limit, decide, next_account
+from core import Account, Limit, Reading, burn_rate, corrected, decide, next_account
 
 NOW = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
 LATER = datetime(2026, 9, 4, 17, 0, tzinfo=timezone.utc)
@@ -158,6 +158,71 @@ class DecideTest(unittest.TestCase):
             decide(limits, active="work", accounts=accounts, now=NOW, thresholds=THRESHOLDS),
             ("rotate", "recovered"),
         )
+
+
+class BurnRateTest(unittest.TestCase):
+    """Two cached readings, taken at times Claude stamped, give the pace the
+    active account is spending at."""
+
+    def reading(self, hours, **remaining):
+        return Reading(fetched_at=hours * 3_600_000, remaining=remaining)
+
+    def test_it_reads_headroom_lost_per_hour(self):
+        rate = burn_rate(self.reading(0, session=80), self.reading(1, session=50))
+
+        self.assertEqual(rate, {"session": 30.0})
+
+    def test_a_window_that_reopened_is_not_a_negative_burn(self):
+        """A 5-hour window rolling over takes headroom from 5% back to 100%.
+        Read as a rate that is a huge refill, and the correction below would
+        credit headroom nobody has."""
+        rate = burn_rate(self.reading(0, session=5), self.reading(1, session=100))
+
+        self.assertEqual(rate, {})
+
+    def test_two_looks_at_the_same_reading_tell_nothing(self):
+        """The common case: Claude has not refreshed between two turn ends, so
+        both stamps match and there is no interval to divide by."""
+        rate = burn_rate(self.reading(1, session=50), self.reading(1, session=50))
+
+        self.assertEqual(rate, {})
+
+
+class CorrectedTest(unittest.TestCase):
+    """Claude's cached reading can be an hour old. Knowing its age and the pace
+    it was spending at says roughly where the window really is now."""
+
+    def test_it_takes_off_what_the_pace_implies_was_spent(self):
+        limits = [limit(group="session", remaining=57)]
+
+        reading = corrected(limits, {"session": 49.0}, age_hours=1.0)
+
+        self.assertEqual(reading[0].remaining, 8.0)
+
+    def test_headroom_never_reads_below_empty(self):
+        """A long-stale reading times a heavy pace overshoots, and a negative
+        headroom would sort below a spent account."""
+        limits = [limit(group="session", remaining=10)]
+
+        reading = corrected(limits, {"session": 50.0}, age_hours=2.0)
+
+        self.assertEqual(reading[0].remaining, 0)
+
+    def test_a_group_with_no_rate_is_left_as_it_was(self):
+        limits = [limit(group="weekly", remaining=40)]
+
+        reading = corrected(limits, {"session": 50.0}, age_hours=1.0)
+
+        self.assertEqual(reading[0].remaining, 40)
+
+    def test_a_fresh_reading_is_its_own_answer(self):
+        """The saving that pays for all this: nothing to correct means nothing
+        to ask the endpoint about."""
+        limits = [limit(group="session", remaining=57)]
+
+        reading = corrected(limits, {"session": 49.0}, age_hours=0.0)
+
+        self.assertEqual(reading, limits)
 
 
 class NextAccountTest(unittest.TestCase):
@@ -1471,6 +1536,18 @@ class InspectTest(unittest.TestCase):
         with open(os.path.join(self.accounts_dir, identifier + ".json"), "w") as handle:
             json.dump(data, handle)
 
+    def test_it_reports_the_stamp_claude_put_on_the_reading(self):
+        """The burn correction measures against Claude's own stamps, never the
+        wall clock, so the age of the reading has to come back with it."""
+        _, _, fetched_at = claude.inspect_reading(self.paths, now=NOW)
+
+        self.assertEqual(fetched_at, int(NOW.timestamp() * 1000))
+
+    def test_an_unreadable_config_has_no_stamp_to_report(self):
+        os.unlink(self.config_path)
+
+        self.assertEqual(claude.inspect_reading(self.paths, now=NOW), (None, "unknown", None))
+
     def test_it_reports_the_active_account_and_its_headroom(self):
         active, limits = claude.inspect(self.paths, now=NOW)
 
@@ -1776,7 +1853,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(config, grazr.load_config(self.path))
 
     def test_an_unquoted_list_is_rejected_rather_than_half_read(self):
-        """It used to keep only the first name, halving the rotation pool."""
+        """Keeping only the first name would halve the rotation pool."""
         self.write("ACCOUNTS=work personal\n")
 
         with self.assertRaises(ValueError) as raised:
@@ -1947,7 +2024,7 @@ class PaneTagTest(unittest.TestCase):
         return SimpleNamespace(returncode=0, stdout="")
 
     def agent(self, pane_id, agent="claude", tag=None):
-        tokens = {"quota_model": "Opus 5"}
+        tokens = {"other_plugin": "value"}
         if tag is not None:
             tokens["grazr"] = tag
         return {"agent": agent, "pane_id": pane_id, "tokens": tokens}
@@ -1985,6 +2062,30 @@ class PaneTagTest(unittest.TestCase):
 
         self.assertIn("--token", self.reported[0])
         self.assertIn("grazr=personal", self.reported[0])
+
+
+class ReadingRecordTest(unittest.TestCase):
+    """The pace comes from two readings of the same account's window."""
+
+    def setUp(self):
+        self.directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.directory, True)
+
+    def record(self, account, remaining, fetched_at):
+        limits = [limit(group="session", remaining=remaining)]
+        return grazr._record_reading(self.directory, account, limits, fetched_at)
+
+    def test_it_reports_the_pace_between_two_readings(self):
+        self.record("uuid-work", 90, 0)
+
+        self.assertEqual(self.record("uuid-work", 50, 3_600_000), {"session": 40.0})
+
+    def test_the_pace_is_not_measured_across_a_swap(self):
+        """Two accounts spend two different windows, so a rate that spans the
+        change from one to the other describes neither."""
+        self.record("uuid-work", 90, 0)
+
+        self.assertEqual(self.record("uuid-personal", 50, 3_600_000), {})
 
 
 class NotifyTest(unittest.TestCase):
@@ -2291,8 +2392,8 @@ class EnrolledPairFixture(unittest.TestCase):
     def invoke(self, entry, **environment):
         """Run an entry point against the fixture, recording rotations instead
         of performing them. Returns (exit code, what it printed)."""
-        # Empty unless a test names one: the suite runs inside a herdr pane,
-        # whose id would otherwise leak in.
+        # Empty unless a test names one, so a real pane id in the environment
+        # cannot reach the entry point under test.
         environment.setdefault("HERDR_PANE_ID", "")
         environment.update(
             HERDR_PLUGIN_STATE_DIR=self.state_dir,
@@ -2350,8 +2451,7 @@ class HookTest(EnrolledPairFixture):
 
     def test_an_auth_setting_is_reported_once_not_on_every_turn_end(self):
         """A settings.json auth key is a standing situation, like a restricted
-        account, rather than news each time a pane goes idle. Refusing inside
-        the swap said it again on every one of them."""
+        account, rather than news each time a pane goes idle."""
         with open(os.path.join(self.claude_dir, "settings.json"), "w") as handle:
             json.dump({"env": {"ANTHROPIC_API_KEY": "sk-ant-x"}}, handle)
         event = json.dumps({"data": {"agent": "claude", "agent_status": "idle"}})
@@ -2363,6 +2463,49 @@ class HookTest(EnrolledPairFixture):
         self.assertEqual(again, "", "the second turn end has nothing new to say")
         self.assertEqual(self.rotations, [], "a swap under an auth key moves nothing")
         self.assertEqual(len(self.notices), 1)
+
+    def write_usage_at(self, percent, minutes_ago):
+        """A reading Claude stamped in the past, which is the state the cache
+        spends most of its life in."""
+        stamped = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
+            json.dump(
+                config_json(
+                    fetched_at=stamped,
+                    limits=[{"kind": "session", "group": "session", "percent": percent,
+                             "resets_at": None, "scope": None}],
+                ),
+                handle,
+            )
+
+    def test_a_reading_the_pace_says_has_run_down_is_worth_asking_about(self):
+        """A reading that sits above the mark on its face, while its age and the
+        pace behind it put the real figure under. Raw, grazr never asks."""
+        self.write_config('ACCOUNTS="work personal"\nLIVE_USAGE_BELOW=25\n')
+        self.write_usage_at(percent=10, minutes_ago=55)  # 90% left
+        self.run_hook()
+        self.write_usage_at(percent=50, minutes_ago=25)  # 50% left half an hour on
+        asked = []
+
+        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
+            self.run_hook()
+
+        # 40 points went in that half hour, and the reading is 25 minutes old,
+        # so the 50% on screen is really nearer 17 and worth confirming.
+        self.assertEqual(asked, [1], "a stale reading above the mark still earns one call")
+
+    def test_it_does_not_ask_the_endpoint_when_there_is_nowhere_to_go(self):
+        """The call is undocumented and rate-limited, and its whole purpose is
+        deciding a rotation. With no account able to take over, the answer
+        cannot change anything, so asking spends a request on nothing."""
+        os.unlink(os.path.join(self.state_dir, "accounts", "uuid-personal.json"))
+        self.write_usage(percent=99)
+        asked = []
+
+        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
+            self.run_hook()
+
+        self.assertEqual(asked, [], "nothing to rotate to, so nothing to ask about")
 
     def test_a_reading_too_old_to_trust_is_replaced_by_a_live_one(self):
         self.write_stale_usage(percent=20)
@@ -2461,16 +2604,17 @@ class HookTest(EnrolledPairFixture):
         """Whatever the first pane did is already done by the time this one gets
         in, so the decision has to be made against the world as it is now."""
         inspected = []
-        real_inspect = claude.inspect
+        real_reading = claude.inspect_reading
 
-        def counting_inspect(paths, now):
+        def counting_reading(paths, now):
             inspected.append(now)
-            return real_inspect(paths, now)
+            return real_reading(paths, now)
 
-        with mock.patch.object(claude, "inspect", counting_inspect):
+        # inspect delegates here, so this counts the read under the lock too.
+        with mock.patch.object(claude, "inspect_reading", counting_reading):
             self.run_hook()
 
-        self.assertEqual(len(inspected), 2, "inspect once to decide, once under the lock")
+        self.assertEqual(len(inspected), 2, "read once to decide, once under the lock")
 
 
 class SwapTest(EnrolledPairFixture):

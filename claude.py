@@ -210,14 +210,25 @@ Paths = namedtuple("Paths", "config_path config_dir accounts_dir")
 
 def inspect(paths, now):
     """Who Claude is logged in as, and what that account has left."""
+    active, limits, _ = inspect_reading(paths, now)
+    return active, limits
+
+
+def inspect_reading(paths, now):
+    """The same, plus the millisecond stamp Claude wrote on the reading. Only
+    the burn correction needs the stamp, and measuring against it rather than
+    the wall clock is what keeps a rate honest."""
     try:
         with open(paths.config_path) as handle:
             config = json.load(handle)
     except (OSError, ValueError):
         # Not logged in, or read while Claude was rewriting the file.
-        return None, "unknown"
+        return None, "unknown", None
     active = (config.get("oauthAccount") or {}).get("accountUuid")
-    return active, read_limits(config, now)
+    fetched_at = (config.get("cachedUsageUtilization") or {}).get("fetchedAtMs")
+    if not isinstance(fetched_at, (int, float)) or isinstance(fetched_at, bool):
+        fetched_at = None
+    return active, read_limits(config, now), fetched_at
 
 
 def has_parked_credential(store, account_id):

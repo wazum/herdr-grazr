@@ -31,7 +31,7 @@ jobs:
 
   clock:
     # A fixture stamped with a fixed time, read by code that calls the real
-    # clock, passes until the two drift apart. That shipped once already.
+    # clock, passes until the two drift apart.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

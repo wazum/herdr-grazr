@@ -37,11 +37,13 @@ ACCOUNTS=""
 ENABLED=1
 DRY_RUN=0                # 1 = log the decision, do not swap
 
-# Claude can leave its cached usage unrefreshed for over an hour, long enough
-# for a window to run dry unseen. Below this much headroom, grazr asks the same
-# endpoint Claude asks, at most once every few minutes. 0 turns that off and
-# leaves grazr with whatever Claude last wrote down.
-LIVE_USAGE_BELOW=50
+# Below this much headroom, grazr asks the same endpoint Claude asks, at most
+# once every few minutes, and never when no other account could take over.
+# grazr allows for how old Claude's reading is and how fast the window was
+# going, so this mark sits near the thresholds above rather than covering for a
+# number that may be stale. 0 turns the call off and leaves grazr with whatever
+# Claude last wrote down.
+LIVE_USAGE_BELOW=30
 """
 
 _THRESHOLD_KEYS = {"REMAINING_SESSION": ("session", 15), "REMAINING_WEEKLY": ("weekly", 20)}
@@ -302,7 +304,7 @@ def load_config(path):
             if not tokens:
                 continue
             # A quoted value survives as one token, so leftovers mean it was
-            # unquoted, which used to drop every name after the first.
+            # unquoted, and every name after the first would be lost.
             if len(tokens) >= 3 and tokens[1] == "=":
                 key, value, leftover = tokens[0], tokens[2], tokens[3:]
             else:
@@ -326,7 +328,7 @@ def load_config(path):
         thresholds[group] = _percent(settings.pop(key, None), key, default)
     flags = [_flag(settings.pop(key, None), key, default) for key, default in _FLAG_KEYS]
     live_usage_below = _percent(
-        settings.pop("LIVE_USAGE_BELOW", None), "LIVE_USAGE_BELOW", 50
+        settings.pop("LIVE_USAGE_BELOW", None), "LIVE_USAGE_BELOW", 30
     )
     accounts = shlex.split(settings.pop("ACCOUNTS", "") or "")
     if len(set(accounts)) != len(accounts):
@@ -436,11 +438,18 @@ def hook():
 
     paths, store, state_dir = _paths()
     now = datetime.now(timezone.utc)
-    active, limits = claude.inspect(paths, now)
+    active, limits, fetched_at = claude.inspect_reading(paths, now)
     if active is None:
         return 0
 
-    if _worth_asking(limits, config.live_usage_below) and _fetch_due(state_dir):
+    # _fetch_due stamps the interval as a side effect, so it goes last: a call
+    # refused for any other reason must not spend the next five minutes.
+    if (
+        _worth_asking(_estimate(state_dir, active, limits, fetched_at, now),
+                      config.live_usage_below)
+        and _somewhere_to_go(paths, config, active, now)
+        and _fetch_due(state_dir)
+    ):
         limits = claude.fetch_limits(store) or limits
 
     # The common path ends here: no account store, no lock, no subprocess.
@@ -487,6 +496,62 @@ def _worth_asking(limits, below):
     if limits == "unknown":
         return True
     return any(entry.remaining < below for entry in limits)
+
+
+def _estimate(state_dir, active, limits, fetched_at, now):
+    """What the cached reading is probably worth by now: its own figures, less
+    what the pace behind it implies has been spent since Claude took it.
+
+    Only ever decides whether the reading is worth confirming. A rotation is
+    always taken on a reading, never on this.
+    """
+    rates = _record_reading(state_dir, active, limits, fetched_at)
+    if not isinstance(limits, list) or fetched_at is None:
+        return limits
+    age_hours = (now.timestamp() * 1000 - fetched_at) / core.MS_PER_HOUR
+    return core.corrected(limits, rates, age_hours)
+
+
+def _record_reading(state_dir, active, limits, fetched_at):
+    """Keep the newest reading so the next turn end can tell the pace, and
+    return the pace since the one before it.
+
+    Kept per account: a rate measured across a swap would describe two windows
+    at once. A reading Claude has not refreshed is stored again as itself, so
+    the pair either side of it still spans the real interval.
+    """
+    path = os.path.join(state_dir, "reading")
+    previous = None
+    try:
+        with open(path) as handle:
+            stored = json.load(handle)
+        if stored["account"] == active:
+            previous = core.Reading(
+                fetched_at=stored["fetched_at"], remaining=stored["remaining"]
+            )
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+
+    if not isinstance(limits, list) or fetched_at is None:
+        return {}
+    current = core.Reading(
+        fetched_at=fetched_at, remaining={entry.group: entry.remaining for entry in limits}
+    )
+    if previous is None or current.fetched_at != previous.fetched_at:
+        with open(path, "w") as handle:
+            json.dump(
+                {"account": active, "fetched_at": fetched_at, "remaining": current.remaining},
+                handle,
+            )
+    return core.burn_rate(previous, current)
+
+
+def _somewhere_to_go(paths, config, active, now):
+    """Whether any enrolled account could take over. The live reading exists to
+    decide a rotation, so with nowhere to rotate to it decides nothing, and the
+    endpoint is undocumented and rate-limited enough to be worth not asking."""
+    accounts = claude.load_accounts(paths, config.accounts)
+    return core.next_account(active, accounts, now, config.thresholds) is not None
 
 
 def _fetch_due(state_dir):
