@@ -32,6 +32,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A reading *grazr* cannot trust is now asked about even when no account could
+  take over. Claude stops writing its usage cache while `~/.claude.json` and a
+  running session name different accounts, which is the state a swap leaves
+  behind for a while, and staying silent through it meant *grazr* could neither
+  warn nor measure the pace. It asks rarely there, since the call buys those
+  two things rather than a swap.
 - Once a reading says a swap is due, the confirming call comes on a one minute
   leash instead of five. At a heavy pace five minutes of drift is a lot of
   window.

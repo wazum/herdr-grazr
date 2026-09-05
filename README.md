@@ -126,6 +126,22 @@ of window at a heavy pace. And if the endpoint does not answer, *grazr* falls
 back to Claude's cached reading and says so in `herdr plugin log` rather than
 going quiet.
 
+### Why a swap makes Claude stop writing its usage cache
+
+Claude only writes that cache while the account named in `~/.claude.json` and
+the account whose token answered the request are the same one. A swap breaks
+that for a while: the file changes at once, and a session already running keeps
+the token it loaded until it next refreshes. Until the two agree again, Claude
+throws each new reading away instead of writing it, and the copy on disk stops
+moving. It can sit like that for hours.
+
+The swap itself is unaffected, and so is anything you are doing. What it costs
+is *grazr*'s cheap path, the one that reads a number off disk on every turn end
+without touching the network. While the file is frozen, asking the endpoint is
+the only way *grazr* can see at all, and it will do that rather than run on a
+reading it knows is wrong. It asks rarely there, because a swap it cannot make
+is not worth a request more often than that.
+
 ### Turn Herdr's toasts on
 
 **Herdr toasts are off by default**, so *grazr*'s notification will not show

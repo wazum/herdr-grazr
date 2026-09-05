@@ -56,9 +56,12 @@ NOTIFY_TIMEOUT_SECONDS = 5
 
 # The floor between two live usage calls, however many panes are idling. A
 # reading that says a rotation is due waits on the shorter one, because five
-# minutes of drift is a lot of window at a heavy pace.
+# minutes of drift is a lot of window at a heavy pace. A reading grazr cannot
+# see at all, with nowhere to rotate to, waits on the longest: it buys a warning
+# and a pace to measure from, not a swap, and the blind spell runs for hours.
 FETCH_INTERVAL_SECONDS = 300
 URGENT_FETCH_INTERVAL_SECONDS = 60
+BLIND_FETCH_INTERVAL_SECONDS = 1800
 
 
 def notify(title, body, spawn=subprocess.run):
@@ -452,8 +455,7 @@ def hook():
         # Ordered by what each costs to answer, cheapest first. An auth setting
         # makes a swap change nothing, so the usage behind it is not worth a call.
         and not claude.settings_auth_override(paths.config_dir)
-        and _somewhere_to_go(paths, config, active, now)
-        and _fetch_due(state_dir, core.needs_rotation(estimate, now, config.thresholds))
+        and _fetch_due(state_dir, _interval(paths, config, active, estimate, now))
     ):
         answer = claude.fetch_limits(store)
         if answer is None:
@@ -559,6 +561,22 @@ def _record_reading(state_dir, active, limits, fetched_at):
     return core.burn_rate(previous, current)
 
 
+def _interval(paths, config, active, estimate, now):
+    """How long the endpoint gets left alone before the next call, or None to
+    leave it alone entirely.
+
+    With an account able to take over, the call decides a swap and waits the
+    ordinary floor, or the short one when the reading already says to move.
+    With nowhere to go the call decides nothing, so it is only worth making
+    when grazr cannot see the active account at all.
+    """
+    if _somewhere_to_go(paths, config, active, now):
+        if core.needs_rotation(estimate, now, config.thresholds):
+            return URGENT_FETCH_INTERVAL_SECONDS
+        return FETCH_INTERVAL_SECONDS
+    return BLIND_FETCH_INTERVAL_SECONDS if estimate == "unknown" else None
+
+
 def _somewhere_to_go(paths, config, active, now):
     """Whether any enrolled account could take over. The live reading exists to
     decide a rotation, so with nowhere to rotate to it decides nothing, and the
@@ -567,13 +585,13 @@ def _somewhere_to_go(paths, config, active, now):
     return core.next_account(active, accounts, now, config.thresholds) is not None
 
 
-def _fetch_due(state_dir, urgent=False):
+def _fetch_due(state_dir, interval):
     """Several panes go idle at once and the endpoint rate-limits, so the
-    interval is shared through a file rather than kept per process. A reading
-    already under the threshold waits on the shorter one: it is a swap waiting
-    on a confirmation, not a watch."""
+    interval is shared through a file rather than kept per process. A None
+    interval means the call is not worth making at all."""
+    if interval is None:
+        return False
     marker = os.path.join(state_dir, "last_usage_fetch")
-    interval = URGENT_FETCH_INTERVAL_SECONDS if urgent else FETCH_INTERVAL_SECONDS
     try:
         if time.time() - os.path.getmtime(marker) < interval:
             return False

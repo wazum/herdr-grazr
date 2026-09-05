@@ -2384,6 +2384,20 @@ class EnrolledPairFixture(unittest.TestCase):
         with open(os.path.join(self.state_dir, "config.env"), "w") as handle:
             handle.write(text)
 
+    def write_account_snapshot(self, identifier, remaining):
+        """Park a reading on an account so it counts as spent. The reset is in
+        the future, or a lapsed window would read as headroom again."""
+        path = os.path.join(self.state_dir, "accounts", identifier + ".json")
+        with open(path) as handle:
+            stored = json.load(handle)
+        stored["snapshot"] = [{
+            "kind": "session", "scope": None, "group": "session",
+            "remaining": remaining,
+            "resets_at": (datetime.now(timezone.utc) + timedelta(hours=3)).isoformat(),
+        }]
+        with open(path, "w") as handle:
+            json.dump(stored, handle)
+
     def write_usage(self, percent):
         wall_now = datetime.now(timezone.utc)
         with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
@@ -2556,6 +2570,37 @@ class HookTest(EnrolledPairFixture):
             self.run_hook()
 
         self.assertEqual(len(asked), 1, "nothing is due, so the second look waits")
+
+    def test_a_reading_it_cannot_trust_is_asked_about_even_with_nowhere_to_go(self):
+        """Claude stops writing its usage cache while `oauthAccount` and the
+        token a running session holds name different accounts, which is the
+        state a swap leaves behind. Silence there means grazr can neither warn
+        nor learn the pace."""
+        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
+            json.dump(config_json(account_uuid="uuid-someone-else"), handle)
+        self.write_account_snapshot("uuid-personal", remaining=1)
+        asked = []
+
+        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
+            self.run_hook()
+
+        self.assertEqual(asked, [1], "a reading it cannot see is worth one look")
+
+    def test_a_blind_spell_is_not_asked_about_every_few_minutes(self):
+        """The desync runs for hours, and one call every ordinary interval
+        through that would be dozens for a swap grazr still cannot make."""
+        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
+            json.dump(config_json(account_uuid="uuid-someone-else"), handle)
+        self.write_account_snapshot("uuid-personal", remaining=1)
+        asked = []
+
+        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
+            self.run_hook()
+            os.utime(os.path.join(self.state_dir, "last_usage_fetch"),
+                     (time.time() - 600, time.time() - 600))
+            self.run_hook()
+
+        self.assertEqual(len(asked), 1, "ten minutes on is still too soon to look again")
 
     def test_it_does_not_ask_the_endpoint_when_there_is_nowhere_to_go(self):
         """The call is undocumented and rate-limited, and its whole purpose is
