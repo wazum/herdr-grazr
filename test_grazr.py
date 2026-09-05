@@ -1011,6 +1011,39 @@ class OAuthAccountMergeTest(unittest.TestCase):
         self.assertEqual(written["projects"], {"/some/project": {"history": [1, 2, 3]}})
         self.assertIn("cachedUsageUtilization", written)
 
+    def test_the_outgoing_accounts_own_keys_do_not_stay_behind(self):
+        """`primaryApiKey` is a raw key Claude reads back as an auth source, so
+        leaving it behind spends the outgoing account's key on the incoming one.
+        The caches hold that account's plan and model access."""
+        with open(self.path) as handle:
+            config = json.load(handle)
+        config.update(
+            {
+                "primaryApiKey": "sk-ant-work",
+                "customApiKeyResponses": {"approved": ["hash-work"]},
+                "overageCreditGrantCache": {"grants": 1},
+                "passesEligibilityCache": {"eligible": True},
+                "passesLastSeenRemaining": 4,
+                "cachedExtraUsageDisabledReason": "none",
+                "orgModelDefaultCache": {"model": "opus"},
+                "modelAccessCache": {"opus": True},
+                "additionalModelCostsCache": {"opus": 1},
+                "additionalModelOptionsCache": {"opus": []},
+            }
+        )
+        with open(self.path, "w") as handle:
+            json.dump(config, handle)
+
+        claude._write_oauth_account(self.path, {"accountUuid": "uuid-personal"})
+
+        written = self.read()
+        left_behind = sorted(key for key in config if key in written and key != "oauthAccount")
+        self.assertEqual(
+            left_behind,
+            ["cachedUsageUtilization", "projects"],
+            "only keys that belong to no account may outlive the identity swap",
+        )
+
     def test_it_leaves_no_temporary_file_behind(self):
         claude._write_oauth_account(self.path, {"accountUuid": "uuid-personal"})
 

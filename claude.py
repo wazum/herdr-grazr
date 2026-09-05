@@ -26,6 +26,24 @@ CONFIG_LOCK_STALE_MS = 60_000
 # except the login": a key Claude adds later must not start crossing accounts.
 CARRIED_CREDENTIAL_KEYS = ("mcpOAuth",)
 
+# `primaryApiKey` is a raw key Claude reads back as an auth source, so a
+# leftover spends the outgoing account's key on the incoming one; the caches
+# describe its plan and model access. Claude re-fetches each on demand, so
+# dropping them costs a request. `cachedUsageUtilization` is left in place:
+# read_limits already discards it when it names another account.
+ACCOUNT_SCOPED_CONFIG_KEYS = (
+    "primaryApiKey",
+    "customApiKeyResponses",
+    "overageCreditGrantCache",
+    "passesEligibilityCache",
+    "passesLastSeenRemaining",
+    "cachedExtraUsageDisabledReason",
+    "orgModelDefaultCache",
+    "modelAccessCache",
+    "additionalModelCostsCache",
+    "additionalModelOptionsCache",
+)
+
 # What Claude's own fetchUtilization calls, with the headers and the 5s budget
 # it uses. The body it gets back is what it caches verbatim as `utilization`.
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
@@ -422,9 +440,9 @@ def _save_account(paths, account_id, account):
 
 
 def _write_oauth_account(config_path, oauth_account):
-    """Point ~/.claude.json at another identity. Read-modify-write preserving
-    every other key, then one atomic replace, because Claude watches this file
-    rather than locking it."""
+    """Point ~/.claude.json at another identity. Read-modify-write dropping the
+    outgoing account's own keys and keeping the rest, then one atomic replace,
+    because Claude watches this file rather than locking it."""
     with _config_lock(config_path):
         _merge_oauth_account(config_path, oauth_account)
 
@@ -443,6 +461,8 @@ def _merge_oauth_account(config_path, oauth_account):
     with open(config_path) as handle:
         config = json.load(handle)
     config["oauthAccount"] = oauth_account
+    for key in ACCOUNT_SCOPED_CONFIG_KEYS:
+        config.pop(key, None)
 
     directory = os.path.dirname(config_path) or "."
     handle, temporary = tempfile.mkstemp(dir=directory, prefix=".grazr-", suffix=".json")

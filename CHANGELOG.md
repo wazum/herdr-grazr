@@ -12,6 +12,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   logins in the same store as the account credential, and they are minted
   against each server rather than against an account, so they now stay put
   while the login around them changes.
+- A swap no longer leaves the account you left behind in Claude's config. Its
+  `/login` API key stayed there, and Claude reads that key back as a way to
+  authenticate, so the account you moved to could spend it. Its plan and
+  model caches stayed too, and described the wrong account until Claude asked
+  again.
 
 ## 0.2.0 - 2026-09-04
 
