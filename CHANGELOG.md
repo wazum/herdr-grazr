@@ -12,6 +12,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   logins in the same store as the account credential, and they are minted
   against each server rather than against an account, so they now stay put
   while the login around them changes.
+- A rotation now says when the account it moved to had a token that expired
+  while it was parked. Claude refreshes one on its next request, but a
+  refresh token already spent elsewhere makes that fail and signs the account
+  out. The line is the only warning before that happens.
 - An `apiKeyHelper`, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` in
   `settings.json` puts Claude on API-key auth, so swapping the saved
   claude.ai login under it changes nothing. grazr used to report those swaps

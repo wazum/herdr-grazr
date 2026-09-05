@@ -386,6 +386,27 @@ def rotate(paths, store, active_id, next_id, snapshot):
         _merge_oauth_account(paths.config_path, identity)
 
     _record_snapshot(paths, active_id, snapshot)
+    return _expired_note(arriving)
+
+
+def _expired_note(blob):
+    """What to say about a parked token that expired while it sat, or None.
+
+    Claude refreshes an expired token on its next request, so this is not a
+    refusal. But a refresh token spent somewhere else -- another machine, a
+    `claude auth login` for the same account -- fails that refresh and Claude
+    signs the account out, so the note is the warning.
+    """
+    try:
+        expires_at = json.loads(blob)["claudeAiOauth"]["expiresAt"]
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not isinstance(expires_at, (int, float)) or isinstance(expires_at, bool):
+        return None
+    # Claude writes this as epoch milliseconds.
+    if expires_at > time.time() * 1000:
+        return None
+    return "; its token had expired, so Claude has to refresh it"
 
 
 def settings_auth_override(config_dir):

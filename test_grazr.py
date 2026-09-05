@@ -1258,6 +1258,23 @@ class RotateTest(unittest.TestCase):
             "the MCP logins belong to no account, so a swap must carry them over",
         )
 
+    def test_it_reports_an_arriving_token_that_had_already_expired(self):
+        """A parked token expires while it sits, and Claude refreshes it on the
+        next request. That refresh fails if the refresh token was spent
+        elsewhere, and then the account signs out with nothing in the log to
+        explain it."""
+        for expires_at, expected in ((0, True), ((time.time() + 3600) * 1000, False)):
+            with self.subTest(expires_at=expires_at):
+                self.store.parked["uuid-personal"] = json.dumps(
+                    {"claudeAiOauth": {"accessToken": "tok", "expiresAt": expires_at}}
+                )
+
+                note = claude.rotate(
+                    self.paths, self.store, "uuid-work", "uuid-personal", "locked"
+                )
+
+                self.assertEqual(bool(note and "expired" in note), expected)
+
     def test_an_auth_setting_stops_the_swap_before_it_pretends_to_work(self):
         """Any of these puts Claude on API-key auth, so swapping the saved
         claude.ai login underneath one changes nothing while the log and the
@@ -1976,6 +1993,17 @@ class ActOnDecisionTest(unittest.TestCase):
                 accounts or [],
                 now or NOW,
             )
+
+    def test_the_line_carries_what_the_swap_reported(self):
+        """The swap sees the arriving credential; act_on does not."""
+        with mock.patch.object(claude, "rotate", lambda *arguments: "; its token had expired"), \
+                mock.patch.object(grazr, "notify", self.record_notice):
+            line = grazr.act_on(
+                ("rotate", "uuid-personal"), self.paths, self.store, self.state_dir,
+                "uuid-work", [], False, [], NOW,
+            )
+
+        self.assertIn("its token had expired", line)
 
     def test_staying_is_silent(self):
         self.act("stay")

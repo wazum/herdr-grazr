@@ -140,8 +140,8 @@ def act_on(decision, paths, store, state_dir, active_id, limits, dry_run, accoun
     if dry_run:
         return "DRY_RUN: would rotate %s -> %s" % (name_of(active_id), name_of(next_id))
 
-    claude.rotate(paths, store, active_id, next_id, limits)
-    line = "rotated %s -> %s" % (name_of(active_id), name_of(next_id))
+    note = claude.rotate(paths, store, active_id, next_id, limits)
+    line = "rotated %s -> %s%s" % (name_of(active_id), name_of(next_id), note or "")
     shown = notify(
         "grazr: now on %s" % name_of(next_id),
         "Remote Control needs /remote-control per pane",
