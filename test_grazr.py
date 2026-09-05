@@ -1423,6 +1423,15 @@ class RotateTest(unittest.TestCase):
 
         self.assertEqual(set(os.listdir(self.accounts_dir)), before)
 
+    def test_a_swap_completes_on_a_reading_it_could_not_trust(self):
+        """A swap leaves the reading untrusted for a while, and the manual swap
+        hands whatever it read straight through. One that has already moved the
+        credential must not die recording it."""
+        self.run_rotate(snapshot="unknown")
+
+        self.assertEqual(self.store.live, "PARKED-PERSONAL")
+        self.assertIsNone(self.read_account("uuid-work")["snapshot"])
+
     def test_it_records_what_the_outgoing_account_had_left(self):
         spent = [limit(group="session", remaining=3)]
 

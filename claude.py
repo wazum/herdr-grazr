@@ -260,8 +260,12 @@ def load_accounts(paths, names):
 
 
 def snapshot_to_json(snapshot):
-    if snapshot is None or snapshot == "locked":
+    if snapshot == "locked":
         return snapshot
+    if not isinstance(snapshot, list):
+        # A restriction is worth recording. Not knowing is not, so "unknown"
+        # stores as never parked.
+        return None
     return [
         {
             "kind": entry.kind,

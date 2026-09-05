@@ -32,6 +32,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A swap no longer dies recording the account it just left when the reading
+  was one *grazr* could not trust. A swap leaves Claude's cache naming the
+  account you came from, so the manual swap was most likely to hit this on the
+  second one in a row, after the credential had already moved.
 - A reading *grazr* cannot trust is now asked about even when no account could
   take over. Claude stops writing its usage cache while `~/.claude.json` and a
   running session name different accounts, which is the state a swap leaves
