@@ -14,7 +14,6 @@ import os
 import shlex
 import subprocess
 import sys
-import tempfile
 import termios
 import time
 import tty
@@ -22,6 +21,7 @@ from collections import namedtuple
 from datetime import datetime, timezone
 
 import accounts
+import atomic
 import claude
 import core
 import stores
@@ -289,23 +289,9 @@ def _announce_once(state_dir, key, title, body):
 
 
 def _write_marker(marker, key, notified):
-    _atomic_write(marker, "%s\n%s" % (key, "1" if notified else "0"))
+    atomic.write(marker, "%s\n%s" % (key, "1" if notified else "0"))
 
 
-def _atomic_write(path, text):
-    """Put a file in place in one step. Both shared files are written on the
-    common path of every turn end, in every pane, with no lock held, and a
-    plain open empties a file before it fills it."""
-    directory = os.path.dirname(path) or "."
-    handle, temporary = tempfile.mkstemp(dir=directory, prefix=".grazr-")
-    try:
-        with os.fdopen(handle, "w") as writer:
-            writer.write(text)
-        os.replace(temporary, path)
-    except BaseException:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-        raise
 
 
 def is_turn_end(event_json):
@@ -584,7 +570,7 @@ def _record_reading(state_dir, active, limits, fetched_at):
         fetched_at=fetched_at, remaining={entry.group: entry.remaining for entry in limits}
     )
     if previous is None or current.fetched_at != previous.fetched_at:
-        _atomic_write(path, json.dumps(
+        atomic.write(path, json.dumps(
             {"account": active, "fetched_at": fetched_at, "remaining": current.remaining}
         ))
     return core.burn_rate(previous, current)

@@ -6,10 +6,10 @@ the file, its name and the parked snapshot are grazr's own.
 
 import json
 import os
-import tempfile
 import uuid
 from datetime import datetime, timezone
 
+import atomic
 import core
 
 
@@ -72,16 +72,10 @@ def read(paths, identifier):
 
 def write(paths, identifier, account):
     """Metadata only -- never a secret. The credential lives in the store."""
-    handle, temporary = tempfile.mkstemp(dir=paths.accounts_dir, prefix=".grazr-")
-    try:
-        with os.fdopen(handle, "w") as writer:
-            json.dump(account, writer, indent=2)
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, os.path.join(paths.accounts_dir, identifier + ".json"))
-    except BaseException:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-        raise
+    atomic.write(
+        os.path.join(paths.accounts_dir, identifier + ".json"),
+        json.dumps(account, indent=2),
+    )
 
 
 def record_snapshot(paths, identifier, snapshot):

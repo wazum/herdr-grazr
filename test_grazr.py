@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import accounts
+import atomic
 import claude
 import grazr
 import stores
@@ -1418,7 +1419,7 @@ class RotateTest(unittest.TestCase):
         accumulates in the one place that must stay readable."""
         before = set(os.listdir(self.accounts_dir))
 
-        with mock.patch.object(claude.json, "dump", side_effect=OSError("disk full")):
+        with mock.patch.object(atomic.os, "replace", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 accounts.write(self.paths, "uuid-work", {"name": "work"})
 
@@ -2882,6 +2883,22 @@ class FitnessTest(unittest.TestCase):
         for forbidden in ("import os", "import subprocess", "import pathlib", "open("):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, self.source)
+
+    def test_a_file_is_put_in_place_in_exactly_one_way(self):
+        """Every writer a second reader can catch mid-write needs the same
+        make-then-replace, and separate copies of it drift apart."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        writers = {}
+        for name in ("atomic.py", "accounts.py", "claude.py", "grazr.py", "stores.py"):
+            with open(os.path.join(here, name)) as source:
+                writers[name] = source.read().count("tempfile.mkstemp(")
+
+        self.assertEqual(writers.get("atomic.py"), 1, "the one implementation lives here")
+        self.assertEqual(
+            {name: count for name, count in writers.items() if count and name != "atomic.py"},
+            {},
+            "no module keeps its own copy",
+        )
 
 
 if __name__ == "__main__":

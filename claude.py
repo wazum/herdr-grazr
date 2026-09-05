@@ -2,12 +2,12 @@ import contextlib
 import json
 import os
 import shutil
-import tempfile
 import time
 import urllib.request
 from collections import namedtuple
 
 import accounts
+import atomic
 import core
 
 # Claude treats its cached usage as stale past this age (OZr in the 2.1.260 binary).
@@ -420,16 +420,6 @@ def _merge_oauth_account(config_path, oauth_account):
     for key in ACCOUNT_SCOPED_CONFIG_KEYS:
         config.pop(key, None)
 
-    directory = os.path.dirname(config_path) or "."
-    handle, temporary = tempfile.mkstemp(dir=directory, prefix=".grazr-", suffix=".json")
-    try:
-        with os.fdopen(handle, "w") as writer:
-            json.dump(config, writer)
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, config_path)
-    except BaseException:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-        raise
+    atomic.write(config_path, json.dumps(config))
 
 

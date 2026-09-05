@@ -10,8 +10,9 @@ import platform
 import re
 import shlex
 import subprocess
-import tempfile
 import unicodedata
+
+import atomic
 
 IS_MAC = platform.system() == "Darwin"
 
@@ -84,19 +85,9 @@ class FileStore:
             return None
 
     def _write(self, path, blob):
-        """One atomic replace: Claude re-reads this file on every request and
-        must never see it half-written."""
-        directory = os.path.dirname(path) or "."
-        handle, temporary = tempfile.mkstemp(dir=directory, prefix=".grazr-")
-        try:
-            with os.fdopen(handle, "w") as writer:
-                writer.write(blob)
-            os.chmod(temporary, 0o600)
-            os.replace(temporary, path)
-        except BaseException:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
-            raise
+        """Claude re-reads this file on every request and must never see it
+        half-written."""
+        atomic.write(path, blob)
 
 
 def default_store(isolated, config_dir, state_dir, keychain_account):
