@@ -21,6 +21,11 @@ OAUTH_LOCK_STALE_MS = 60_000
 # greppable. Its stale age is unpublished, so this matches the other lock.
 CONFIG_LOCK_STALE_MS = 60_000
 
+# `mcpOAuth` holds a login per MCP server, minted against that server and not
+# against a Claude account, so it survives a swap. An allowlist, not "everything
+# except the login": a key Claude adds later must not start crossing accounts.
+CARRIED_CREDENTIAL_KEYS = ("mcpOAuth",)
+
 # What Claude's own fetchUtilization calls, with the headers and the 5s budget
 # it uses. The body it gets back is what it caches verbatim as `utilization`.
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
@@ -344,11 +349,32 @@ def rotate(paths, store, active_id, next_id, snapshot):
         if leaving != arriving:
             store.write_parked(active_id, leaving)
             renew()
-            store.write_live(arriving)
+            store.write_live(_carry_shared_keys(arriving, leaving))
             renew()
         _merge_oauth_account(paths.config_path, identity)
 
     _record_snapshot(paths, active_id, snapshot)
+
+
+def _carry_shared_keys(arriving, leaving):
+    """Move what belongs to no account onto the credential coming in, so a swap
+    does not sign the user out of every MCP server.
+
+    Best-effort: a blob that will not parse is installed as it stands. Refusing
+    here would strand the pane on an account that has already run out.
+    """
+    try:
+        outgoing, incoming = json.loads(leaving), json.loads(arriving)
+    except ValueError:
+        return arriving
+    if not isinstance(outgoing, dict) or not isinstance(incoming, dict):
+        return arriving
+    carried = {key: outgoing[key] for key in CARRIED_CREDENTIAL_KEYS if key in outgoing}
+    if not carried:
+        # Byte for byte, rather than a re-serialisation that only moves whitespace.
+        return arriving
+    incoming.update(carried)
+    return json.dumps(incoming)
 
 
 def _account_id(value):

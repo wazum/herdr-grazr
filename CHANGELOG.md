@@ -4,6 +4,15 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- A swap no longer signs you out of your MCP servers. Claude keeps their
+  logins in the same store as the account credential, and they are minted
+  against each server rather than against an account, so they now stay put
+  while the login around them changes.
+
 ## 0.2.0 - 2026-09-04
 
 ### Added

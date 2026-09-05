@@ -1197,6 +1197,48 @@ class RotateTest(unittest.TestCase):
         with open(self.config_path) as handle:
             self.assertEqual(json.load(handle)["oauthAccount"], {"accountUuid": "uuid-personal"})
 
+    def test_the_mcp_server_logins_survive_the_swap(self):
+        """`mcpOAuth` sits beside the login in the same blob, one entry per MCP
+        server, minted against that server and not against any Claude account.
+        Installing the arriving blob whole signs the user out of every one."""
+        self.store.live = json.dumps(
+            {
+                "claudeAiOauth": {"accessToken": "work-token"},
+                "mcpOAuth": {"linear": {"accessToken": "mcp-token"}},
+            }
+        )
+        self.store.parked["uuid-personal"] = json.dumps(
+            {"claudeAiOauth": {"accessToken": "personal-token"}}
+        )
+
+        self.run_rotate()
+
+        installed = json.loads(self.store.live)
+        self.assertEqual(installed["claudeAiOauth"], {"accessToken": "personal-token"})
+        self.assertEqual(
+            installed.get("mcpOAuth"),
+            {"linear": {"accessToken": "mcp-token"}},
+            "the MCP logins belong to no account, so a swap must carry them over",
+        )
+
+    def test_an_account_scoped_key_does_not_follow_the_swap(self):
+        """The other side of the allowlist: Claude's own logout drops this key,
+        so it belongs to the account leaving and must not reach the one
+        arriving."""
+        self.store.live = json.dumps(
+            {
+                "claudeAiOauth": {"accessToken": "work-token"},
+                "trustedDeviceToken": "device-work",
+            }
+        )
+        self.store.parked["uuid-personal"] = json.dumps(
+            {"claudeAiOauth": {"accessToken": "personal-token"}}
+        )
+
+        self.run_rotate()
+
+        self.assertNotIn("trustedDeviceToken", json.loads(self.store.live))
+
     def test_a_failed_snapshot_write_leaves_no_debris(self):
         """The accounts directory is enumerated to find accounts, so litter here
         accumulates in the one place that must stay readable."""
