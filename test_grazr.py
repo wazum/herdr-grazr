@@ -2946,6 +2946,15 @@ class FitnessTest(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, self.source)
 
+    def test_a_swap_fits_inside_the_locks_it_holds(self):
+        """A swap makes three keychain calls while holding both locks. If all
+        three ran to their timeout and outlasted a stale age, Claude would take
+        the lock back mid-swap, and two modules have to agree on that."""
+        worst_case_ms = 3 * stores.SECURITY_TIMEOUT_SECONDS * 1000
+
+        self.assertLess(worst_case_ms, claude.OAUTH_LOCK_STALE_MS)
+        self.assertLess(worst_case_ms, claude.CONFIG_LOCK_STALE_MS)
+
     def test_a_file_is_put_in_place_in_exactly_one_way(self):
         """Every writer a second reader can catch mid-write needs the same
         make-then-replace, and separate copies of it drift apart."""
