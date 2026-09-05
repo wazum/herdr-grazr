@@ -18,9 +18,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   other account could take over, and it weighs the age Claude stamped on a
   reading against the pace the last two imply, so a stale-looking number earns
   a call while a fresh one above the mark does not. The estimate decides only
-  when to ask. A swap is still made against a reading. `LIVE_USAGE_BELOW` now
-  defaults to 30 rather than 50, since it no longer has to cover for a number
-  that may be stale.
+  when to ask. A swap is still made against a reading.
 
 ### Changed
 
@@ -81,6 +79,26 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   authenticate, so the account you moved to could spend it. Its plan and
   model caches stayed too, and described the wrong account until Claude asked
   again.
+
+### Internal
+
+Housekeeping, none of which changes what *grazr* does.
+
+- Two modules split out of files that held more than they said. `accounts.py`
+  keeps the accounts *grazr* enrolled, which are its own files rather than
+  Claude's, and `atomic.py` keeps the single way a file is put in place. Four
+  copies of that had drifted apart.
+- An entry point is handed what it works on instead of building it from the
+  environment. A `Runtime` carries the paths, the credential store, the state
+  directory and the config, so a caller can pass a sandbox and a test cannot
+  reach the real keychain by forgetting a variable.
+- What *grazr* last reported and whether its toast appeared travel together,
+  so one reader and one writer know how the two are stored.
+- Two names that did nothing are gone: an identity writer no caller used, and
+  a wrapper that read Claude's config only to drop part of the answer.
+- A test pins the agreement between the keychain timeout and the lock stale
+  ages. Raising either number alone would let a swap lose a lock mid-write,
+  and only a comment said so.
 
 ## 0.2.0 - 2026-09-04
 
