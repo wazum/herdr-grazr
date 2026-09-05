@@ -32,6 +32,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The panes are tagged after the rotation lock is let go rather than while it
+  is held. Two Herdr calls per pane, capped at five seconds each, is long
+  enough to stall every other pane's hook, and a tag is worth none of that.
 - A swap no longer dies recording the account it just left when the reading
   was one *grazr* could not trust. A swap leaves Claude's cache naming the
   account you came from, so the manual swap was most likely to hit this on the

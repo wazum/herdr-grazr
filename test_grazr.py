@@ -2213,14 +2213,6 @@ class ActOnDecisionTest(unittest.TestCase):
 
         self.assertIn("its token had expired", line)
 
-    def test_a_rotation_repaints_the_pane_tags(self):
-        """Every pane names the account it spends, so after a swap they all
-        name a different one."""
-        self.act(("rotate", "uuid-personal"),
-                 accounts=[account_named("personal", "uuid-personal")])
-
-        self.assertEqual(self.tags, ["personal"])
-
     def test_staying_is_silent(self):
         self.act("stay")
 
@@ -2388,6 +2380,13 @@ class EnrolledPairFixture(unittest.TestCase):
         self.rotations = []
         self.notices = []
         self.tags = []
+        self.lock_free_while_tagging = []
+
+    def record_tag(self, name):
+        """Notes whether the rotation lock was free while panes were tagged."""
+        self.tags.append(name)
+        with grazr._rotation_lock(self.state_dir) as free:
+            self.lock_free_while_tagging.append(free)
 
     def write_config(self, text):
         with open(os.path.join(self.state_dir, "config.env"), "w") as handle:
@@ -2451,7 +2450,7 @@ class EnrolledPairFixture(unittest.TestCase):
         ), mock.patch.object(
             grazr, "notify", lambda title, body: self.notices.append((title, body)) or True
         ), mock.patch.object(
-            grazr, "tag_all", lambda name: self.tags.append(name)
+            grazr, "tag_all", self.record_tag
         ), mock.patch.object(
             grazr, "tag_pane", lambda pane, name: self.tags.append((pane, name))
         ), contextlib.redirect_stdout(printed):
@@ -2579,6 +2578,16 @@ class HookTest(EnrolledPairFixture):
             self.run_hook()
 
         self.assertEqual(len(asked), 1, "nothing is due, so the second look waits")
+
+    def test_the_panes_are_tagged_after_the_lock_is_let_go(self):
+        """Holding the rotation lock through the tagging stalls every other
+        pane's hook, and a tag is worth none of it."""
+        self.write_usage(percent=99)
+
+        self.run_hook()
+
+        self.assertEqual(self.tags, ["personal"])
+        self.assertEqual(self.lock_free_while_tagging, [True])
 
     def test_a_reading_it_cannot_trust_is_asked_about_even_with_nowhere_to_go(self):
         """Claude stops writing its usage cache while `oauthAccount` and the
@@ -2737,6 +2746,13 @@ class HookTest(EnrolledPairFixture):
 class SwapTest(EnrolledPairFixture):
     """A swap the user asks for, from a Herdr key. The active account's headroom
     is not consulted; whether it wants to leave is the user's business."""
+
+    def test_it_tags_the_panes_after_the_lock_is_let_go(self):
+        """The manual swap holds the same lock, so it repaints the same way."""
+        self.invoke(grazr.swap)
+
+        self.assertEqual(self.tags, ["personal"])
+        self.assertEqual(self.lock_free_while_tagging, [True])
 
     def test_swaps_off_a_healthy_account(self):
         self.write_usage(percent=10)

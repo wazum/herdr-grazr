@@ -171,10 +171,8 @@ def act_on(decision, paths, store, state_dir, active_id, limits, dry_run, accoun
     if decision == "stay":
         return None
 
-    named = {entry.id: entry.name for entry in accounts}
-
     def name_of(identifier):
-        return named.get(identifier, identifier)
+        return _name_of(accounts, identifier)
 
     if decision == "locked":
         line = "account %s is restricted, not rotating" % name_of(active_id)
@@ -232,8 +230,18 @@ def act_on(decision, paths, store, state_dir, active_id, limits, dry_run, accoun
     # The marker is the dedupe key too. Leaving the situation this rotation
     # just resolved on it would silence that situation the next time it is real.
     _write_marker(os.path.join(state_dir, "last_notice"), line, shown)
-    tag_all(name_of(next_id))
     return line
+
+
+def _name_of(accounts, identifier):
+    """The name enrolment gave an account, or its id when grazr never saw it."""
+    return {entry.id: entry.name for entry in accounts}.get(identifier, identifier)
+
+
+def _moved(decision, dry_run):
+    """Whether a credential actually changed hands, which is the only thing
+    worth repainting the panes for."""
+    return not dry_run and isinstance(decision, tuple) and decision[0] == "rotate"
 
 
 def _soonest_reset(now, *snapshots):
@@ -496,6 +504,12 @@ def hook():
             decision, paths, store, state_dir, active, limits, config.dry_run, accounts, now
         )
 
+    # Outside the lock. Two herdr calls per pane, capped at five seconds each,
+    # is far too long to hold the thing every other pane's hook is waiting on,
+    # and a tag is worth none of that.
+    if _moved(decision, config.dry_run):
+        tag_all(_name_of(accounts, decision[1]))
+
     if line:
         print(line)
     return 0
@@ -693,12 +707,16 @@ def swap():
             return _refuse_swap(
                 "nothing to swap to, earliest reset %s" % (soonest or "unknown")
             )
+        decision = ("rotate", next_id)
         print(
             act_on(
-                ("rotate", next_id), paths, store, state_dir, active, limits,
+                decision, paths, store, state_dir, active, limits,
                 config.dry_run, accounts, now,
             )
         )
+
+    if _moved(decision, config.dry_run):
+        tag_all(_name_of(accounts, next_id))
     return 0
 
 
