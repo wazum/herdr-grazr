@@ -32,6 +32,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The two files *grazr* shares between panes are put in place in one step. A
+  plain write empties a file before it fills it, and both are written on the
+  common path of every turn end with no lock held.
 - The panes are tagged after the rotation lock is let go rather than while it
   is held. Two Herdr calls per pane, capped at five seconds each, is long
   enough to stall every other pane's hook, and a tag is worth none of that.

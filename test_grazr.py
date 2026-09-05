@@ -2086,6 +2086,49 @@ class PaneTagTest(unittest.TestCase):
         self.assertIn("grazr=personal", self.reported[0])
 
 
+class SharedStateWriteTest(unittest.TestCase):
+    """Both files are written on the common path of every turn end, in every
+    pane, with no lock held."""
+
+    def setUp(self):
+        self.directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.directory, True)
+
+    def never_empty(self, path, write):
+        """Runs `write` against a file that already holds something, and reports
+        the size the target had at each replace. No replace at all means it was
+        truncated in place instead."""
+        with open(path, "w") as handle:
+            handle.write("already here")
+        seen = []
+        real_replace = os.replace
+
+        def watching_replace(source, target):
+            seen.append(os.path.getsize(target))
+            return real_replace(source, target)
+
+        with mock.patch.object(os, "replace", watching_replace):
+            write()
+        return seen
+
+    def test_the_notice_marker_is_swapped_in_whole(self):
+        marker = os.path.join(self.directory, "last_notice")
+
+        sizes = self.never_empty(marker, lambda: grazr._write_marker(marker, "key", True))
+
+        self.assertEqual(sizes, [len("already here")], "replaced, never truncated")
+
+    def test_the_reading_is_swapped_in_whole(self):
+        path = os.path.join(self.directory, "reading")
+        limits = [limit(group="session", remaining=50)]
+
+        sizes = self.never_empty(
+            path, lambda: grazr._record_reading(self.directory, "uuid-work", limits, 1000)
+        )
+
+        self.assertEqual(sizes, [len("already here")], "replaced, never truncated")
+
+
 class ReadingRecordTest(unittest.TestCase):
     """The pace comes from two readings of the same account's window."""
 
