@@ -44,17 +44,21 @@ def account_named(name, identifier, snapshot=None):
 
 
 class FakeStore:
-    def __init__(self, live=None, parked=None, isolated=None):
+    def __init__(self, live=None, parked=None, isolated=None, refuse_over=None):
         self.live = live
         self.parked = dict(parked or {})
         self.isolated = dict(isolated or {})
         self.events = []
         self.discard_result = True
+        # The keychain is the one store that refuses a blob for being too long.
+        self.refuse_over = refuse_over
 
     def read_live(self):
         return self.live
 
     def write_live(self, blob):
+        if self.refuse_over is not None and len(blob) > self.refuse_over:
+            raise ValueError("credential needs a longer security line than allowed")
         self.events.append(("write_live", blob))
         self.live = blob
 
@@ -1254,6 +1258,24 @@ class RotateTest(unittest.TestCase):
             "the MCP logins belong to no account, so a swap must carry them over",
         )
 
+    def test_a_carry_too_big_for_the_store_still_completes_the_swap(self):
+        """The keychain refuses a credential past its line length rather than
+        truncating it, and carrying the MCP logins is what can push it over.
+        Losing them beats leaving the pane on a spent account."""
+        self.store.live = json.dumps(
+            {
+                "claudeAiOauth": {"accessToken": "work-token"},
+                "mcpOAuth": {"linear": {"accessToken": "x" * 200}},
+            }
+        )
+        arriving = json.dumps({"claudeAiOauth": {"accessToken": "personal-token"}})
+        self.store.parked["uuid-personal"] = arriving
+        self.store.refuse_over = len(arriving)
+
+        self.run_rotate()
+
+        self.assertEqual(self.store.live, arriving)
+
     def test_an_account_scoped_key_does_not_follow_the_swap(self):
         """The other side of the allowlist: Claude's own logout drops this key,
         so it belongs to the account leaving and must not reach the one
@@ -1619,6 +1641,19 @@ class InteractiveExitTest(unittest.TestCase):
 
         self.assertEqual(code, 1)
         self.assertIn("keychain refused", out.getvalue())
+        self.assertNotIn("Traceback", out.getvalue())
+
+    def test_a_store_that_refuses_an_oversize_credential_is_one_line_too(self):
+        """stores.py refuses a credential past the keychain's line length rather
+        than letting security truncate the item. That refusal is a ValueError,
+        and it reaches the hook on every turn end."""
+        refusal = ValueError("credential for grazr-uuid needs a 5000 byte security line")
+        with mock.patch.object(grazr, "status", side_effect=refusal), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            code = grazr.main(["grazr.py", "status"])
+
+        self.assertEqual(code, 1)
+        self.assertIn("security line", out.getvalue())
         self.assertNotIn("Traceback", out.getvalue())
 
     def test_a_missing_claude_cli_is_a_message_not_a_traceback(self):

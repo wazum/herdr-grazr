@@ -12,6 +12,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   logins in the same store as the account credential, and they are minted
   against each server rather than against an account, so they now stay put
   while the login around them changes.
+- Carrying the MCP logins can make a credential too long for the macOS
+  keychain, which refuses one rather than truncating it. The swap now goes
+  ahead without them instead of failing.
+- A credential the keychain will not hold, and a line in `config.env` that
+  will not parse, now print one line saying so instead of a stack trace.
 - A swap no longer leaves the account you left behind in Claude's config. Its
   `/login` API key stayed there, and Claude reads that key back as a way to
   authenticate, so the account you moved to could spend it. Its plan and

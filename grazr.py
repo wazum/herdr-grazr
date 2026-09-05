@@ -434,9 +434,10 @@ def main(argv):
         # A pane owns the terminal, so a traceback is the last thing to show.
         print("\ncancelled")
         return 130
-    except RuntimeError as error:
-        # Every RuntimeError here is a refusal grazr raised on purpose -- a busy
-        # lock, an unreadable keychain -- and its message is the whole point.
+    except (RuntimeError, ValueError) as error:
+        # Every one of these is a refusal grazr raised on purpose -- a busy
+        # lock, an unreadable keychain, a credential too long to store, a
+        # config line it cannot parse -- and its message is the whole point.
         print("grazr: %s" % error)
         return 1
 
