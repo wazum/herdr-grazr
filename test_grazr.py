@@ -1061,6 +1061,12 @@ class OAuthAccountMergeTest(unittest.TestCase):
                 handle,
             )
 
+    def swap_identity(self, oauth_account):
+        """What rotate does: the merge under the config lock, and nothing else
+        wrapped around it."""
+        with claude._config_lock(self.path):
+            claude._merge_oauth_account(self.path, oauth_account)
+
     def read(self):
         with open(self.path) as handle:
             return json.load(handle)
@@ -1071,12 +1077,12 @@ class OAuthAccountMergeTest(unittest.TestCase):
         os.mkdir(self.path + ".lock")
 
         with self.assertRaises(RuntimeError):
-            claude._write_oauth_account(self.path, {"accountUuid": "uuid-personal"})
+            self.swap_identity({"accountUuid": "uuid-personal"})
 
         self.assertEqual(self.read()["oauthAccount"]["accountUuid"], "uuid-work")
 
     def test_the_config_lock_is_taken_and_released(self):
-        claude._write_oauth_account(self.path, {"accountUuid": "uuid-personal"})
+        self.swap_identity({"accountUuid": "uuid-personal"})
 
         self.assertFalse(os.path.exists(self.path + ".lock"), "a leaked lock blocks Claude")
         self.assertEqual(self.read()["oauthAccount"]["accountUuid"], "uuid-personal")
@@ -1087,12 +1093,12 @@ class OAuthAccountMergeTest(unittest.TestCase):
         long_ago = time.time() - (claude.CONFIG_LOCK_STALE_MS / 1000) - 10
         os.utime(lock, (long_ago, long_ago))
 
-        claude._write_oauth_account(self.path, {"accountUuid": "uuid-personal"})
+        self.swap_identity({"accountUuid": "uuid-personal"})
 
         self.assertEqual(self.read()["oauthAccount"]["accountUuid"], "uuid-personal")
 
     def test_it_swaps_the_identity_and_keeps_every_other_key(self):
-        claude._write_oauth_account(self.path, {"accountUuid": "uuid-personal"})
+        self.swap_identity({"accountUuid": "uuid-personal"})
 
         written = self.read()
         self.assertEqual(written["oauthAccount"], {"accountUuid": "uuid-personal"})
@@ -1122,7 +1128,7 @@ class OAuthAccountMergeTest(unittest.TestCase):
         with open(self.path, "w") as handle:
             json.dump(config, handle)
 
-        claude._write_oauth_account(self.path, {"accountUuid": "uuid-personal"})
+        self.swap_identity({"accountUuid": "uuid-personal"})
 
         written = self.read()
         left_behind = sorted(key for key in config if key in written and key != "oauthAccount")
@@ -1133,14 +1139,14 @@ class OAuthAccountMergeTest(unittest.TestCase):
         )
 
     def test_it_leaves_no_temporary_file_behind(self):
-        claude._write_oauth_account(self.path, {"accountUuid": "uuid-personal"})
+        self.swap_identity({"accountUuid": "uuid-personal"})
 
         self.assertEqual(os.listdir(self.directory), [".claude.json"])
 
     def test_the_config_stays_owner_only(self):
         os.chmod(self.path, 0o600)
 
-        claude._write_oauth_account(self.path, {"accountUuid": "uuid-personal"})
+        self.swap_identity({"accountUuid": "uuid-personal"})
 
         self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
 

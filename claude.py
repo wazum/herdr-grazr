@@ -395,14 +395,6 @@ def _carry_shared_keys(arriving, leaving):
     return json.dumps(incoming)
 
 
-def _write_oauth_account(config_path, oauth_account):
-    """Point ~/.claude.json at another identity. Read-modify-write dropping the
-    outgoing account's own keys and keeping the rest, then one atomic replace,
-    because Claude watches this file rather than locking it."""
-    with _config_lock(config_path):
-        _merge_oauth_account(config_path, oauth_account)
-
-
 def _config_lock(config_path):
     return _proper_lock(
         config_path + ".lock",
