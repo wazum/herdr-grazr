@@ -320,6 +320,23 @@ class KeychainStoreTest(unittest.TestCase):
     def store(self, spawn):
         return stores.KeychainStore("Claude Code-credentials", "tester", spawn=spawn)
 
+    def test_every_call_names_the_security_binary_by_absolute_path(self):
+        """A `security` planted earlier on PATH would be handed the credential.
+        The absolute path is Apple's own binary, which is also the one the
+        keychain binds its access grant to."""
+        seen = []
+
+        def fake_subprocess(argv, **kwargs):
+            seen.append(argv[0])
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        store = self.store(fake_subprocess)
+        store.read_live()
+        store.write_live("{}")
+        store.discard_isolated("/tmp/isolated")
+
+        self.assertEqual(seen, ["/usr/bin/security"] * 3)
+
     def test_read_live_asks_for_the_live_item_and_returns_the_blob(self):
         recorded = {}
 
@@ -333,7 +350,7 @@ class KeychainStoreTest(unittest.TestCase):
         self.assertEqual(
             recorded["argv"],
             [
-                "security",
+                stores.SECURITY_BIN,
                 "find-generic-password",
                 "-s",
                 "Claude Code-credentials",
@@ -353,7 +370,7 @@ class KeychainStoreTest(unittest.TestCase):
 
         self.store(fake_subprocess).write_live('{"token":"abc"}')
 
-        self.assertEqual(recorded["argv"], ["security", "-i"])
+        self.assertEqual(recorded["argv"], [stores.SECURITY_BIN, "-i"])
         self.assertEqual(
             recorded["line"],
             "add-generic-password -U -s 'Claude Code-credentials' -a tester -X %s\n"
@@ -366,7 +383,7 @@ class KeychainStoreTest(unittest.TestCase):
         keychain = {}
 
         def fake_subprocess(argv, input=None, capture_output=True, text=True, **kwargs):
-            if argv[:2] == ["security", "-i"]:
+            if argv[:2] == [stores.SECURITY_BIN, "-i"]:
                 service = shlex.split(input)[3]
                 keychain[service] = shlex.split(input)[7]
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -429,7 +446,7 @@ class KeychainStoreTest(unittest.TestCase):
                 self.assertEqual(
                     recorded["argv"],
                     [
-                        "security",
+                        stores.SECURITY_BIN,
                         "delete-generic-password",
                         "-s",
                         "Claude Code-credentials-" + suffix,
@@ -634,7 +651,7 @@ class SecurityRunnerTest(unittest.TestCase):
 
         self.store(fake_subprocess).write_live("secret-blob")
 
-        self.assertEqual(recorded["argv"], ["security", "-i"])
+        self.assertEqual(recorded["argv"], [stores.SECURITY_BIN, "-i"])
         self.assertIn("secret-blob".encode().hex(), recorded["input"])
         self.assertNotIn("secret-blob".encode().hex(), " ".join(recorded["argv"]))
         # Without the newline `security -i` exits 0 having written nothing.
@@ -941,7 +958,7 @@ class CredentialReadTest(unittest.TestCase):
         self.assertEqual(blob, '{"token":"abc"}')
         self.assertEqual(
             recorded["argv"],
-            ["security", "find-generic-password", "-s", "svc", "-a", "acct", "-w"],
+            [stores.SECURITY_BIN, "find-generic-password", "-s", "svc", "-a", "acct", "-w"],
         )
 
     def test_a_hex_encoded_item_is_decoded(self):

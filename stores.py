@@ -17,6 +17,12 @@ IS_MAC = platform.system() == "Darwin"
 
 SERVICE = "Claude Code-credentials"
 
+# Absolute, so a `security` planted earlier on PATH cannot be handed the
+# credential. Apple's own binary is also the one the keychain binds its access
+# grant to, which is why grazr shells out here rather than linking a framework:
+# a grant against a rebuilt binary of our own would die at the next build.
+SECURITY_BIN = "/usr/bin/security"
+
 # At 4096 security truncates the line, writes the truncated prefix over the
 # item, and only then exits 1.
 MAX_SECURITY_LINE = 4095
@@ -147,7 +153,7 @@ class KeychainStore:
         try:
             completed = self._spawn(
                 [
-                    "security",
+                    SECURITY_BIN,
                     "delete-generic-password",
                     "-s",
                     service_name(config_dir),
@@ -169,7 +175,7 @@ class KeychainStore:
         comes back on stdout."""
         try:
             completed = self._spawn(
-                ["security", "find-generic-password", "-s", service, "-a", self.keychain_account, "-w"],
+                [SECURITY_BIN, "find-generic-password", "-s", service, "-a", self.keychain_account, "-w"],
                 capture_output=True,
                 text=True,
                 timeout=SECURITY_TIMEOUT_SECONDS,
@@ -210,7 +216,7 @@ class KeychainStore:
         """Feed one command to `security -i`. The secret rides stdin, argv stays clean."""
         try:
             completed = self._spawn(
-                ["security", "-i"],
+                [SECURITY_BIN, "-i"],
                 input=line + "\n",
                 capture_output=True,
                 text=True,
