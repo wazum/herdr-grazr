@@ -92,55 +92,16 @@ Start with `DRY_RUN=1` for a day. Decisions show up in `herdr plugin log`.
 
 ### Why `LIVE_USAGE_BELOW` exists
 
-Claude writes what it knows about your limits into `~/.claude.json`, and
-*grazr* reads it there. That copy can sit unrefreshed for over an hour, which
-is long enough for a window to go from half full to spent without *grazr* ever
-seeing a number in between. Waiting for it means rotating late, and rotating
-late is the one failure that costs you the session.
+Claude writes what it knows about your limits into `~/.claude.json`, and that
+copy can sit unrefreshed for an hour, long enough for a window to run dry
+unseen. So once headroom drops below this mark, *grazr* asks the same endpoint
+Claude asks, using the credential it already keeps. Above it, nothing reaches
+for the network.
 
-So once headroom drops below `LIVE_USAGE_BELOW`, *grazr* asks the same endpoint
-Claude asks, using the credential it already keeps, and never more than once
-every five minutes however many panes go idle together. Above that mark it does
-not reach for the network at all. Set it to `0` to turn the call off and leave
-*grazr* with whatever Claude last wrote down.
-
-The two marks work as a pair. `LIVE_USAGE_BELOW` opens a band above the
-thresholds where *grazr* starts confirming, and the thresholds are where it
-swaps. Keep the band wide, because Claude's reading runs behind the window it
-describes and the whole point is to catch that before it crosses the line.
-Thirty percent of a five-hour window is around twenty minutes at a heavy pace,
-which survives both a lagging reading and the wait for the next check. Fifteen
-does not.
-
-The endpoint is undocumented, so *grazr* asks as little as it can. It never
-asks when no other account could take over, because the answer cannot change
-anything. And it weighs the age Claude stamped on a reading against the pace
-the last two imply, so a number that only looks safe because it is half an hour
-old still earns a call, while a fresh one above the mark costs nothing. That
-estimate decides when to ask, never when to rotate. A swap is always made
-against a reading.
-
-Once a reading says a swap is due, the confirming call comes on a shorter
-leash than the one that only watches, because five minutes of drift is a lot
-of window at a heavy pace. And if the endpoint does not answer, *grazr* falls
-back to Claude's cached reading and says so in `herdr plugin log` rather than
-going quiet.
-
-### Why a swap makes Claude stop writing its usage cache
-
-Claude only writes that cache while the account named in `~/.claude.json` and
-the account whose token answered the request are the same one. A swap breaks
-that for a while: the file changes at once, and a session already running keeps
-the token it loaded until it next refreshes. Until the two agree again, Claude
-throws each new reading away instead of writing it, and the copy on disk stops
-moving. It can sit like that for hours.
-
-The swap itself is unaffected, and so is anything you are doing. What it costs
-is *grazr*'s cheap path, the one that reads a number off disk on every turn end
-without touching the network. While the file is frozen, asking the endpoint is
-the only way *grazr* can see at all, and it will do that rather than run on a
-reading it knows is wrong. It asks rarely there, because a swap it cannot make
-is not worth a request more often than that.
+Keep the mark above the thresholds. The gap between the two is where *grazr*
+watches, and it needs enough room to catch a reading that is behind before it
+drops past the line. `0` turns the call off and leaves *grazr* with whatever
+Claude last wrote down.
 
 ### Turn Herdr's toasts on
 
@@ -239,19 +200,19 @@ rows = [
 ]
 ```
 
-Each entry in `rows` is one line. Give the tag its own: a row carrying three
-tokens truncates before it reaches the third.
+Each entry in `rows` is one line, and a row with three tokens on it runs out of
+width, so give the tag its own.
 
 Then run `herdr server reload-config`. A pane picks up the tag when Claude
-starts in it, and a rotation repaints every pane. Panes already open when you
-added the row are still blank, so fill them in once:
+starts in it, and a rotation repaints every pane. Panes already open are still
+blank, so fill them in once:
 
 ```sh
 herdr plugin action invoke wazum.grazr.tag
 ```
 
-A pane you have scrolled up in is skipped until you scroll back down, because
-repainting a pane's metadata can jump it to the bottom.
+A pane you have scrolled up in keeps its old tag until you scroll back down,
+because repainting one can jump it to the bottom.
 
 ## What it will not do
 
