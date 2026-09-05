@@ -80,12 +80,12 @@ $EDITOR "$(herdr plugin config-dir wazum.grazr)/config.env"
 ```
 
 ```sh
-REMAINING_SESSION=15     # rotate when the 5-hour window has less than this left
+REMAINING_SESSION=30     # rotate when the 5-hour window has less than this left
 REMAINING_WEEKLY=20      # weekly windows get more margin, because losing one costs days
 ACCOUNTS="work personal" # preference order, first with headroom wins
 ENABLED=1
 DRY_RUN=0                # 1 = log the decision, do not swap
-LIVE_USAGE_BELOW=30      # below this much headroom, ask instead of guessing
+LIVE_USAGE_BELOW=45      # start confirming here, above the thresholds
 ```
 
 Start with `DRY_RUN=1` for a day. Decisions show up in `herdr plugin log`.
@@ -104,6 +104,14 @@ every five minutes however many panes go idle together. Above that mark it does
 not reach for the network at all. Set it to `0` to turn the call off and leave
 *grazr* with whatever Claude last wrote down.
 
+The two marks work as a pair. `LIVE_USAGE_BELOW` opens a band above the
+thresholds where *grazr* starts confirming, and the thresholds are where it
+swaps. Keep the band wide, because Claude's reading runs behind the window it
+describes and the whole point is to catch that before it crosses the line.
+Thirty percent of a five-hour window is around twenty minutes at a heavy pace,
+which survives both a lagging reading and the wait for the next check. Fifteen
+does not.
+
 The endpoint is undocumented, so *grazr* asks as little as it can. It never
 asks when no other account could take over, because the answer cannot change
 anything. And it weighs the age Claude stamped on a reading against the pace
@@ -111,6 +119,12 @@ the last two imply, so a number that only looks safe because it is half an hour
 old still earns a call, while a fresh one above the mark costs nothing. That
 estimate decides when to ask, never when to rotate. A swap is always made
 against a reading.
+
+Once a reading says a swap is due, the confirming call comes on a shorter
+leash than the one that only watches, because five minutes of drift is a lot
+of window at a heavy pace. And if the endpoint does not answer, *grazr* falls
+back to Claude's cached reading and says so in `herdr plugin log` rather than
+going quiet.
 
 ### Turn Herdr's toasts on
 

@@ -22,8 +22,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   defaults to 30 rather than 50, since it no longer has to cover for a number
   that may be stale.
 
+### Changed
+
+- `REMAINING_SESSION` now defaults to 30 and `LIVE_USAGE_BELOW` to 45. Claude's
+  cached reading runs behind the window it describes, and 15 left no room for
+  that lag plus the wait for the next check. The gap between the two marks is
+  the band *grazr* watches in, so `LIVE_USAGE_BELOW` sits above the thresholds.
+  Both are still yours to set.
+
 ### Fixed
 
+- Once a reading says a swap is due, the confirming call comes on a one minute
+  leash instead of five. At a heavy pace five minutes of drift is a lot of
+  window.
+- An endpoint that does not answer is reported instead of passing in silence.
+  Falling back to Claude's cached reading is right, but doing it quietly let a
+  window run out while *grazr* looked like it was working.
 - The keychain is reached at `/usr/bin/security` rather than by name, so a
   `security` planted earlier on `PATH` is never handed a credential.
 - When no account is above your thresholds, *grazr* says they are low rather

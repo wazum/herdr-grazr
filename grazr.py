@@ -27,8 +27,9 @@ import stores
 Config = namedtuple("Config", "thresholds accounts enabled dry_run live_usage_below")
 
 DEFAULT_CONFIG = """\
-# Rotate when a limit group has less than this percent left.
-REMAINING_SESSION=15     # the 5-hour window
+# Rotate when a limit group has less than this percent left. Claude's cached
+# reading runs behind the window, so leave more room than you mean to lose.
+REMAINING_SESSION=30     # the 5-hour window
 REMAINING_WEEKLY=20      # weekly windows, incl. per-model ones
 
 # Preference order. First account with headroom wins.
@@ -37,16 +38,14 @@ ACCOUNTS=""
 ENABLED=1
 DRY_RUN=0                # 1 = log the decision, do not swap
 
-# Below this much headroom, grazr asks the same endpoint Claude asks, at most
-# once every few minutes, and never when no other account could take over.
-# grazr allows for how old Claude's reading is and how fast the window was
-# going, so this mark sits near the thresholds above rather than covering for a
-# number that may be stale. 0 turns the call off and leaves grazr with whatever
-# Claude last wrote down.
-LIVE_USAGE_BELOW=30
+# Below this much headroom, grazr asks the same endpoint Claude asks. Keep it
+# higher than the thresholds above. The gap between the two is the band grazr
+# watches in, wide enough to catch a reading that runs behind before it crosses
+# the line. 0 turns the call off and leaves grazr with the cached reading.
+LIVE_USAGE_BELOW=45
 """
 
-_THRESHOLD_KEYS = {"REMAINING_SESSION": ("session", 15), "REMAINING_WEEKLY": ("weekly", 20)}
+_THRESHOLD_KEYS = {"REMAINING_SESSION": ("session", 30), "REMAINING_WEEKLY": ("weekly", 20)}
 _FLAG_KEYS = (("ENABLED", True), ("DRY_RUN", False))
 
 
@@ -55,8 +54,11 @@ TURN_ENDS = ("idle", "done")
 # Telling the user is worth a moment, but not a stuck hook on every turn end.
 NOTIFY_TIMEOUT_SECONDS = 5
 
-# The floor between two live usage calls, however many panes are idling.
+# The floor between two live usage calls, however many panes are idling. A
+# reading that says a rotation is due waits on the shorter one, because five
+# minutes of drift is a lot of window at a heavy pace.
 FETCH_INTERVAL_SECONDS = 300
+URGENT_FETCH_INTERVAL_SECONDS = 60
 
 
 def notify(title, body, spawn=subprocess.run):
@@ -328,7 +330,7 @@ def load_config(path):
         thresholds[group] = _percent(settings.pop(key, None), key, default)
     flags = [_flag(settings.pop(key, None), key, default) for key, default in _FLAG_KEYS]
     live_usage_below = _percent(
-        settings.pop("LIVE_USAGE_BELOW", None), "LIVE_USAGE_BELOW", 30
+        settings.pop("LIVE_USAGE_BELOW", None), "LIVE_USAGE_BELOW", 45
     )
     accounts = shlex.split(settings.pop("ACCOUNTS", "") or "")
     if len(set(accounts)) != len(accounts):
@@ -444,13 +446,24 @@ def hook():
 
     # _fetch_due stamps the interval as a side effect, so it goes last: a call
     # refused for any other reason must not spend the next five minutes.
+    estimate = _estimate(state_dir, active, limits, fetched_at, now)
     if (
-        _worth_asking(_estimate(state_dir, active, limits, fetched_at, now),
-                      config.live_usage_below)
+        _worth_asking(estimate, config.live_usage_below)
+        # Ordered by what each costs to answer, cheapest first. An auth setting
+        # makes a swap change nothing, so the usage behind it is not worth a call.
+        and not claude.settings_auth_override(paths.config_dir)
         and _somewhere_to_go(paths, config, active, now)
-        and _fetch_due(state_dir)
+        and _fetch_due(state_dir, core.needs_rotation(estimate, now, config.thresholds))
     ):
-        limits = claude.fetch_limits(store) or limits
+        answer = claude.fetch_limits(store)
+        if answer is None:
+            # Going on the cached reading is right, but doing it in silence
+            # lets a window run out while grazr looks like it is working.
+            line = "the usage endpoint did not answer, going on the cached reading"
+            if _announce_once(state_dir, "unconfirmed", "grazr: usage check failed", line):
+                print(line)
+        else:
+            limits = answer
 
     # The common path ends here: no account store, no lock, no subprocess.
     if not core.needs_rotation(limits, now, config.thresholds):
@@ -554,12 +567,15 @@ def _somewhere_to_go(paths, config, active, now):
     return core.next_account(active, accounts, now, config.thresholds) is not None
 
 
-def _fetch_due(state_dir):
+def _fetch_due(state_dir, urgent=False):
     """Several panes go idle at once and the endpoint rate-limits, so the
-    interval is shared through a file rather than kept per process."""
+    interval is shared through a file rather than kept per process. A reading
+    already under the threshold waits on the shorter one: it is a swap waiting
+    on a confirmation, not a watch."""
     marker = os.path.join(state_dir, "last_usage_fetch")
+    interval = URGENT_FETCH_INTERVAL_SECONDS if urgent else FETCH_INTERVAL_SECONDS
     try:
-        if time.time() - os.path.getmtime(marker) < FETCH_INTERVAL_SECONDS:
+        if time.time() - os.path.getmtime(marker) < interval:
             return False
     except OSError:
         pass

@@ -1905,6 +1905,19 @@ class ConfigTest(unittest.TestCase):
         self.assertIn("REMAINING_MONTHLY", str(raised.exception))
 
 
+class ThresholdDefaultTest(unittest.TestCase):
+    """Claude's cached reading runs behind the window it describes, so the mark
+    has to clear the threshold by more than that lag plus one check interval."""
+
+    def test_the_session_default_leaves_room_for_a_lagging_reading(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+
+        config = grazr.load_config(os.path.join(directory, "config.env"))
+
+        self.assertEqual(config.thresholds["session"], 30)
+
+
 class TurnBoundaryTest(unittest.TestCase):
     """`done` is the same idle state in a tab nobody has looked at, so both are
     turn ends. Anything else, any other agent, or a malformed envelope: exit."""
@@ -2402,7 +2415,15 @@ class EnrolledPairFixture(unittest.TestCase):
             CLAUDE_CONFIG_DIR=self.claude_dir,
         )
         printed = io.StringIO()
-        with mock.patch.dict(os.environ, environment), mock.patch.object(
+        # A store of its own, so nothing reaches the real keychain.
+        real_paths = grazr._paths
+
+        def sandboxed_paths():
+            paths, _, state = real_paths()
+            return paths, FakeStore(), state
+
+        with mock.patch.object(grazr, "_paths", sandboxed_paths), \
+                mock.patch.dict(os.environ, environment), mock.patch.object(
             claude, "rotate", lambda *arguments: self.rotations.append(arguments)
         ), mock.patch.object(
             grazr, "notify", lambda title, body: self.notices.append((title, body)) or True
@@ -2494,6 +2515,47 @@ class HookTest(EnrolledPairFixture):
         # 40 points went in that half hour, and the reading is 25 minutes old,
         # so the 50% on screen is really nearer 17 and worth confirming.
         self.assertEqual(asked, [1], "a stale reading above the mark still earns one call")
+
+    def test_an_endpoint_that_does_not_answer_is_reported(self):
+        """A silent fallback lets a window run out while grazr looks busy."""
+        self.write_usage(percent=60)  # 40% left: worth confirming, not yet a swap
+
+        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: None):
+            code, printed = self.invoke(
+                grazr.hook,
+                HERDR_PLUGIN_EVENT_JSON=json.dumps(
+                    {"data": {"agent": "claude", "agent_status": "idle"}}
+                ),
+            )
+
+        self.assertEqual(code, 0)
+        self.assertIn("cached reading", printed)
+
+    def test_a_reading_that_says_rotate_is_confirmed_sooner(self):
+        """Five minutes of drift is a lot of window at a heavy pace."""
+        self.write_usage(percent=99)
+        asked = []
+
+        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
+            self.run_hook()
+            os.utime(os.path.join(self.state_dir, "last_usage_fetch"),
+                     (time.time() - 90, time.time() - 90))
+            self.run_hook()
+
+        self.assertEqual(len(asked), 2, "90 seconds is long enough when a swap is due")
+
+    def test_a_reading_with_room_still_waits_the_full_interval(self):
+        """The watching call stays on the long leash, or the saving is undone."""
+        self.write_usage(percent=60)  # 40% left: under the mark, above the line
+        asked = []
+
+        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
+            self.run_hook()
+            os.utime(os.path.join(self.state_dir, "last_usage_fetch"),
+                     (time.time() - 90, time.time() - 90))
+            self.run_hook()
+
+        self.assertEqual(len(asked), 1, "nothing is due, so the second look waits")
 
     def test_it_does_not_ask_the_endpoint_when_there_is_nowhere_to_go(self):
         """The call is undocumented and rate-limited, and its whole purpose is

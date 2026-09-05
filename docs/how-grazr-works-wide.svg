@@ -67,7 +67,7 @@
       <path d="M 808,136 L 880,192 L 808,248 L 736,192 Z" fill="#f5f5f5"/>
       <path d="M 808,136 L 880,192 L 808,248 L 736,192 Z" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
       <text x="808" y="188" fill="#2d3142" font-size="16" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Spent?</text>
-      <text x="808" y="208" fill="#4f5d75" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">&lt;15% LEFT</text>
+      <text x="808" y="208" fill="#4f5d75" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">&lt;30% LEFT</text>
 
       <!-- focal: the only step that changes anything -->
       <rect x="956" y="156" width="240" height="72" rx="6" fill="#f5f5f5"/>
