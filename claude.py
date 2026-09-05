@@ -27,7 +27,7 @@ CONFIG_LOCK_STALE_MS = 60_000
 CARRIED_CREDENTIAL_KEYS = ("mcpOAuth",)
 
 # `primaryApiKey` is a raw key Claude reads back as an auth source, so a
-# leftover spends the outgoing account's key on the incoming one; the caches
+# leftover spends the outgoing account's key on the incoming one. The caches
 # describe its plan and model access. Claude re-fetches each on demand, so
 # dropping them costs a request. `cachedUsageUtilization` is left in place:
 # read_limits already discards it when it names another account.

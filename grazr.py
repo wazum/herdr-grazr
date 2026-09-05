@@ -321,7 +321,7 @@ def load_config(path):
                 raise ValueError("%s line %d: %s is set twice" % (path, number, key))
             settings[key] = value
 
-    # An omitted setting takes the documented default; a misspelt one is
+    # An omitted setting takes the documented default. A misspelt one is
     # rejected below, so a typo can never quietly become a default.
     thresholds = {}
     for key, (group, default) in _THRESHOLD_KEYS.items():
@@ -456,7 +456,7 @@ def hook():
     if not core.needs_rotation(limits, now, config.thresholds):
         return 0
 
-    # Only the rotate and announce paths take the lock; the common path above
+    # Only the rotate and announce paths take the lock. The common path above
     # never touches it.
     with _rotation_lock(state_dir) as acquired:
         if not acquired:

@@ -370,7 +370,7 @@ class ServiceNameTest(unittest.TestCase):
         )
 
     def test_a_decomposed_path_hashes_the_same_as_its_composed_form(self):
-        """Claude normalises to NFC before hashing; a path picked up from the
+        """Claude normalises to NFC before hashing. A path picked up from the
         filesystem can arrive decomposed."""
         composed = "/tmp/grazr-über"
         decomposed = "/tmp/grazr-über"
@@ -379,7 +379,7 @@ class ServiceNameTest(unittest.TestCase):
 
 
 class KeychainStoreTest(unittest.TestCase):
-    """Where a secret physically lives is the store's business alone; the rest
+    """Where a secret physically lives is the store's business alone. The rest
     of grazr speaks read/write, live/parked."""
 
     def store(self, spawn):
@@ -494,7 +494,7 @@ class KeychainStoreTest(unittest.TestCase):
         self.assertEqual(recorded["argv"][3], "Claude Code-credentials-" + suffix)
 
     def test_discard_isolated_reports_whether_the_item_is_gone(self):
-        """Missing counts as gone; a keychain error does not, and never raises:
+        """Missing counts as gone. A keychain error does not, and never raises:
         the caller runs in a finally and must not mask the real failure."""
         for returncode, expected in ((0, True), (44, True), (1, False)):
             with self.subTest(returncode=returncode):
@@ -582,7 +582,7 @@ class FileStoreTest(unittest.TestCase):
         self.assertEqual(self.store.read_isolated(isolated), "ISOLATED")
 
     def test_discard_isolated_reports_whether_the_credential_is_gone(self):
-        """Missing counts as gone; an unremovable file does not, and never
+        """Missing counts as gone. An unremovable file does not, and never
         raises: the caller runs in a finally."""
         isolated = os.path.join(self.directory, "enrol-tmp")
         os.mkdir(isolated)
@@ -648,7 +648,7 @@ class CredentialInstallTest(unittest.TestCase):
         self.assertEqual(stores.MAX_SECURITY_LINE, 4095)
 
     def test_a_line_of_exactly_the_ceiling_installs_and_one_byte_more_refuses(self):
-        """4095 installs; 4096 truncates the item destructively, verified
+        """4095 installs. 4096 truncates the item destructively, verified
         against the real binary. Each blob byte adds two hex characters, so the
         account name carries the parity that makes both values reachable."""
         service = "svcx"
@@ -2181,7 +2181,7 @@ class ActOnDecisionTest(unittest.TestCase):
             )
 
     def test_the_line_carries_what_the_swap_reported(self):
-        """The swap sees the arriving credential; act_on does not."""
+        """Only the swap sees the arriving credential."""
         with mock.patch.object(claude, "rotate", lambda *arguments: "; its token had expired"), \
                 mock.patch.object(grazr, "notify", self.record_notice):
             line = grazr.act_on(
@@ -2249,7 +2249,8 @@ class ActOnDecisionTest(unittest.TestCase):
         self.assertEqual(len(self.notices), 1)
 
     def test_a_repeated_situation_stays_out_of_the_log_too(self):
-        """Reached on every idle event of every pane; one line, not hundreds."""
+        """Reached on every idle event of every pane, so one line and not
+        hundreds."""
         limits = [limit(group="session", remaining=0)]
 
         first = self.act("exhausted", limits=limits)

@@ -104,13 +104,13 @@ every five minutes however many panes go idle together. Above that mark it does
 not reach for the network at all. Set it to `0` to turn the call off and leave
 *grazr* with whatever Claude last wrote down.
 
-The endpoint is undocumented, so *grazr* works to leave it alone. It never asks
-when no other account could take over, since the answer could not change
-anything. And it reads the age Claude stamped on the reading against the pace
-the last two readings imply, so a number that only looks safe because it is
-half an hour old still earns a call, while a fresh one above the mark costs
-nothing. That correction decides when to ask, never when to rotate: a swap is
-always made against a reading, never against an estimate.
+The endpoint is undocumented, so *grazr* asks as little as it can. It never
+asks when no other account could take over, because the answer cannot change
+anything. And it weighs the age Claude stamped on a reading against the pace
+the last two imply, so a number that only looks safe because it is half an hour
+old still earns a call, while a fresh one above the mark costs nothing. That
+estimate decides when to ask, never when to rotate. A swap is always made
+against a reading.
 
 ### Turn Herdr's toasts on
 

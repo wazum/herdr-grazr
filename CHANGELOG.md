@@ -18,7 +18,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   other account could take over, and it weighs the age Claude stamped on a
   reading against the pace the last two imply, so a stale-looking number earns
   a call while a fresh one above the mark does not. The estimate decides only
-  when to ask; a swap is still made against a reading. `LIVE_USAGE_BELOW` now
+  when to ask. A swap is still made against a reading. `LIVE_USAGE_BELOW` now
   defaults to 30 rather than 50, since it no longer has to cover for a number
   that may be stale.
 

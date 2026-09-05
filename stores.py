@@ -27,7 +27,7 @@ SECURITY_BIN = "/usr/bin/security"
 # item, and only then exits 1.
 MAX_SECURITY_LINE = 4095
 
-# A swap makes three keychain calls; all three at full timeout must still fit
+# A swap makes three keychain calls. All three at full timeout must still fit
 # inside the lock stale ages claude.py mirrors.
 SECURITY_TIMEOUT_SECONDS = 15
 
