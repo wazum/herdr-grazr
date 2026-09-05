@@ -33,6 +33,8 @@ Config = namedtuple("Config", "thresholds accounts enabled dry_run live_usage_be
 # went unseen are answered differently.
 Notice = namedtuple("Notice", "key notified")
 
+Runtime = namedtuple("Runtime", "paths store state_dir config")
+
 DEFAULT_CONFIG = """\
 # Rotate when a limit group has less than this percent left. Claude's cached
 # reading runs behind the window, so leave more room than you mean to lose.
@@ -172,9 +174,11 @@ def _herdr(spawn, *arguments):
     return completed.stdout if completed.returncode == 0 else ""
 
 
-def act_on(decision, paths, store, state_dir, active_id, limits, dry_run, accounts=(), now=None):
+def act_on(decision, runtime, active_id, limits, accounts=(), now=None):
     """Carry out what core.decide concluded, and report it. Returns the line
     that goes to stdout, which Herdr keeps in `herdr plugin log`."""
+    paths, store, state_dir, config = runtime
+    dry_run = config.dry_run
     if decision == "stay":
         return None
 
@@ -424,6 +428,18 @@ def read_key(stream=None):
     return key.lower()
 
 
+def _runtime():
+    """Everything an entry point works on, read off the environment once.
+
+    Entry points take one rather than building their own, so a caller can hand
+    over a sandbox instead of reaching the real keychain and account files.
+    """
+    paths, store, state_dir = _paths()
+    return Runtime(
+        paths=paths, store=store, state_dir=state_dir, config=load_config(_config_path())
+    )
+
+
 def _paths():
     state_dir = os.environ.get("HERDR_PLUGIN_STATE_DIR") or os.path.expanduser("~/.grazr")
     accounts_dir = os.path.join(state_dir, "accounts")
@@ -451,17 +467,17 @@ def _config_path():
     return os.path.join(directory, "config.env")
 
 
-def hook():
+def hook(runtime=None):
     """Runs on every pane.agent_status_changed across every pane, so the common
     path is two file reads and no subprocess."""
     if not is_turn_end(os.environ.get("HERDR_PLUGIN_EVENT_JSON")):
         return 0
 
-    config = load_config(_config_path())
+    runtime = runtime or _runtime()
+    paths, store, state_dir, config = runtime
     if not config.enabled:
         return 0
 
-    paths, store, state_dir = _paths()
     now = datetime.now(timezone.utc)
     active, limits, fetched_at = claude.inspect_reading(paths, now)
     if active is None:
@@ -512,9 +528,7 @@ def hook():
             override = claude.settings_auth_override(paths.config_dir)
             if override:
                 decision = ("override", override)
-        line = act_on(
-            decision, paths, store, state_dir, active, limits, config.dry_run, enrolled, now
-        )
+        line = act_on(decision, runtime, active, limits, enrolled, now)
 
     # Outside the lock. Two herdr calls per pane, capped at five seconds each,
     # is far too long to hold the thing every other pane's hook is waiting on,
@@ -677,12 +691,12 @@ def _dispatch(argv):
     return 2
 
 
-def tag():
+def tag(runtime=None):
     """Name the account being spent. The pane event carries a pane id and tags
     that pane, so a new pane is not blank until the next rotation. The action
     carries none and tags every pane, which is what you press after adding the
     sidebar row."""
-    paths, _, _ = _paths()
+    paths = (runtime or _runtime()).paths
     active, _ = claude.inspect(paths, datetime.now(timezone.utc))
     if active is None:
         return 0
@@ -698,11 +712,11 @@ def tag():
     return 0
 
 
-def swap():
+def swap(runtime=None):
     """A swap the user asked for, from a Herdr key. The active account's
     headroom is not consulted, and ENABLED gates the hook only."""
-    config = load_config(_config_path())
-    paths, store, state_dir = _paths()
+    runtime = runtime or _runtime()
+    paths, store, state_dir, config = runtime
     now = datetime.now(timezone.utc)
     with _rotation_lock(state_dir) as acquired:
         if not acquired:
@@ -719,10 +733,7 @@ def swap():
             )
         decision = ("rotate", next_id)
         print(
-            act_on(
-                decision, paths, store, state_dir, active, limits,
-                config.dry_run, enrolled, now,
-            )
+            act_on(decision, runtime, active, limits, enrolled, now)
         )
 
     if _moved(decision, config.dry_run):
@@ -738,9 +749,8 @@ def _refuse_swap(reason):
     return 1
 
 
-def status():
-    paths, store, state_dir = _paths()
-    config = load_config(_config_path())
+def status(runtime=None):
+    paths, store, state_dir, config = runtime or _runtime()
     now = datetime.now(timezone.utc)
     active, limits = claude.inspect(paths, now)
 
@@ -794,7 +804,7 @@ def _describe(snapshot):
     ) or "no limits reported"
 
 
-def enrol():
+def enrol(runtime=None):
     # No title here: the pane border already carries it.
     print("  (s) save the login this machine is using now")
     print("  (l) log in to another account, without touching the current one")
@@ -806,7 +816,7 @@ def enrol():
         print("closed, nothing changed")
         return 0
 
-    paths, store, _ = _paths()
+    paths, store, _, _ = runtime or _runtime()
     if choice == "s":
         return _enrol_from(paths, store, None)
 

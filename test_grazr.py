@@ -2219,6 +2219,7 @@ class ActOnDecisionTest(unittest.TestCase):
         self.rotations = []
         self.notices = []
         self.tags = []
+        self.dry_run = False
         patch = mock.patch.object(grazr, "tag_all", lambda name: self.tags.append(name))
         patch.start()
         self.addCleanup(patch.stop)
@@ -2228,18 +2229,26 @@ class ActOnDecisionTest(unittest.TestCase):
         self.notices.append(title)
         return True
 
+    def runtime(self, dry_run=False):
+        return grazr.Runtime(
+            paths=self.paths,
+            store=self.store,
+            state_dir=self.state_dir,
+            config=grazr.Config(
+                thresholds=THRESHOLDS, accounts=[], enabled=True,
+                dry_run=dry_run, live_usage_below=0,
+            ),
+        )
+
     def act(self, decision, dry_run=False, limits=None, accounts=None, now=None):
         with mock.patch.object(
             claude, "rotate", lambda *arguments: self.rotations.append(arguments)
         ), mock.patch.object(grazr, "notify", self.record_notice):
             return grazr.act_on(
                 decision,
-                self.paths,
-                self.store,
-                self.state_dir,
+                self.runtime(dry_run),
                 "uuid-work",
                 limits or [],
-                dry_run,
                 accounts or [],
                 now or NOW,
             )
@@ -2249,8 +2258,7 @@ class ActOnDecisionTest(unittest.TestCase):
         with mock.patch.object(claude, "rotate", lambda *arguments: "; its token had expired"), \
                 mock.patch.object(grazr, "notify", self.record_notice):
             line = grazr.act_on(
-                ("rotate", "uuid-personal"), self.paths, self.store, self.state_dir,
-                "uuid-work", [], False, [], NOW,
+                ("rotate", "uuid-personal"), self.runtime(), "uuid-work", [], [], NOW
             )
 
         self.assertIn("its token had expired", line)
@@ -2321,7 +2329,7 @@ class ActOnDecisionTest(unittest.TestCase):
         limits = [limit(group="session", remaining=0)]
         with mock.patch.object(grazr, "notify", lambda title, body: False):
             line = grazr.act_on(
-                "exhausted", self.paths, self.store, self.state_dir, "uuid-work", limits, False
+                "exhausted", self.runtime(), "uuid-work", limits
             )
 
         self.assertIn("earliest reset", line or "")
@@ -2332,7 +2340,7 @@ class ActOnDecisionTest(unittest.TestCase):
         limits = [limit(group="session", remaining=0)]
         with mock.patch.object(grazr, "notify", lambda title, body: False):
             grazr.act_on(
-                "exhausted", self.paths, self.store, self.state_dir, "uuid-work", limits, False
+                "exhausted", self.runtime(), "uuid-work", limits
             )
 
         self.act("exhausted", limits=limits)
@@ -2470,24 +2478,12 @@ class EnrolledPairFixture(unittest.TestCase):
     def invoke(self, entry, **environment):
         """Run an entry point against the fixture, recording rotations instead
         of performing them. Returns (exit code, what it printed)."""
-        # Empty unless a test names one, so a real pane id in the environment
-        # cannot reach the entry point under test.
+        # Only what Herdr genuinely passes in the environment. Everything else
+        # is handed over, so nothing here can reach the real keychain.
         environment.setdefault("HERDR_PANE_ID", "")
-        environment.update(
-            HERDR_PLUGIN_STATE_DIR=self.state_dir,
-            HERDR_PLUGIN_CONFIG_DIR=self.state_dir,
-            CLAUDE_CONFIG_DIR=self.claude_dir,
-        )
         printed = io.StringIO()
-        # A store of its own, so nothing reaches the real keychain.
-        real_paths = grazr._paths
 
-        def sandboxed_paths():
-            paths, _, state = real_paths()
-            return paths, FakeStore(), state
-
-        with mock.patch.object(grazr, "_paths", sandboxed_paths), \
-                mock.patch.dict(os.environ, environment), mock.patch.object(
+        with mock.patch.dict(os.environ, environment, clear=True), mock.patch.object(
             claude, "rotate", lambda *arguments: self.rotations.append(arguments)
         ), mock.patch.object(
             grazr, "notify", lambda title, body: self.notices.append((title, body)) or True
@@ -2496,7 +2492,20 @@ class EnrolledPairFixture(unittest.TestCase):
         ), mock.patch.object(
             grazr, "tag_pane", lambda pane, name: self.tags.append((pane, name))
         ), contextlib.redirect_stdout(printed):
-            return entry(), printed.getvalue()
+            return entry(self.runtime()), printed.getvalue()
+
+    def runtime(self):
+        """The sandbox an entry point is handed."""
+        return grazr.Runtime(
+            paths=claude.Paths(
+                config_path=os.path.join(self.claude_dir, ".claude.json"),
+                config_dir=self.claude_dir,
+                accounts_dir=os.path.join(self.state_dir, "accounts"),
+            ),
+            store=FakeStore(),
+            state_dir=self.state_dir,
+            config=grazr.load_config(os.path.join(self.state_dir, "config.env")),
+        )
 
 
 class HookTest(EnrolledPairFixture):
@@ -2863,6 +2872,62 @@ class SwapTest(EnrolledPairFixture):
         self.assertEqual(code, 1)
         self.assertEqual(self.rotations, [])
         self.assertIn("busy", printed)
+
+
+class InjectedRuntimeTest(unittest.TestCase):
+    """An entry point runs on what it is handed. Built from the environment
+    instead, the store and the paths cannot be replaced without patching, and a
+    test that misses one reaches the real keychain."""
+
+    def test_the_hook_runs_on_the_runtime_it_is_given(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        state_dir = os.path.join(directory, "state")
+        claude_dir = os.path.join(directory, "claude")
+        os.makedirs(os.path.join(state_dir, "accounts"))
+        os.makedirs(claude_dir)
+        for identifier, name in (("uuid-work", "work"), ("uuid-personal", "personal")):
+            with open(os.path.join(state_dir, "accounts", identifier + ".json"), "w") as handle:
+                json.dump({"name": name, "oauthAccount": {"accountUuid": identifier}}, handle)
+        wall_now = datetime.now(timezone.utc)
+        with open(os.path.join(claude_dir, ".claude.json"), "w") as handle:
+            json.dump(
+                config_json(
+                    fetched_at=wall_now,
+                    limits=[{
+                        "kind": "session", "group": "session", "percent": 99, "scope": None,
+                        "resets_at": (wall_now + timedelta(hours=5)).isoformat(),
+                    }],
+                ),
+                handle,
+            )
+
+        store = FakeStore(live="LIVE-WORK", parked={"uuid-personal": "PARKED-PERSONAL"})
+        runtime = grazr.Runtime(
+            paths=claude.Paths(
+                config_path=os.path.join(claude_dir, ".claude.json"),
+                config_dir=claude_dir,
+                accounts_dir=os.path.join(state_dir, "accounts"),
+            ),
+            store=store,
+            state_dir=state_dir,
+            config=grazr.Config(
+                thresholds={"session": 30, "weekly": 20},
+                accounts=["work", "personal"],
+                enabled=True,
+                dry_run=False,
+                live_usage_below=0,
+            ),
+        )
+        event = json.dumps({"data": {"agent": "claude", "agent_status": "idle"}})
+
+        # Nothing in the environment points at any of it.
+        with mock.patch.dict(os.environ, {"HERDR_PLUGIN_EVENT_JSON": event}, clear=True), \
+                mock.patch.object(grazr, "notify", lambda title, body: True), \
+                mock.patch.object(grazr, "tag_all", lambda name: None):
+            grazr.hook(runtime)
+
+        self.assertEqual(store.live, "PARKED-PERSONAL", "it swapped inside the given runtime")
 
 
 class FitnessTest(unittest.TestCase):
