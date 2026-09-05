@@ -203,7 +203,7 @@ class LockedAccountTest(unittest.TestCase):
 
 
 class NothingToRotateToTest(unittest.TestCase):
-    """Claiming every account is spent is false when none is enrolled."""
+    """Claiming every account is low is false when none is enrolled."""
 
     def test_no_enrolled_accounts_is_not_the_same_as_all_spent(self):
         limits = [limit(group="session", remaining=1)]

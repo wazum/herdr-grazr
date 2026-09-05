@@ -189,9 +189,14 @@ def act_on(decision, paths, store, state_dir, active_id, limits, dry_run, accoun
             limits,
             *(entry.snapshot for entry in accounts)
         )
-        line = "every account is spent, earliest reset %s" % (soonest or "unknown")
+        # Below your thresholds, not cut off by the server: these accounts still
+        # serve requests, so saying they are spent would stop you working for
+        # no reason.
+        line = "every account is below your thresholds, earliest reset %s" % (
+            soonest or "unknown"
+        )
         announced = _announce_once(
-            state_dir, "exhausted:%s" % soonest, "grazr: no headroom left", line
+            state_dir, "exhausted:%s" % soonest, "grazr: every account is low", line
         )
         return line if announced else None
 

@@ -18,6 +18,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - The keychain is reached at `/usr/bin/security` rather than by name, so a
   `security` planted earlier on `PATH` is never handed a credential.
+- When no account is above your thresholds, *grazr* says they are low rather
+  than spent. They still serve requests, and the old wording read as though
+  the server had cut you off.
 - A swap no longer signs you out of your MCP servers. Claude keeps their
   logins in the same store as the account credential, and they are minted
   against each server rather than against an account, so they now stay put
