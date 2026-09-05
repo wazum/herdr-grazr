@@ -5,10 +5,9 @@ import shutil
 import tempfile
 import time
 import urllib.request
-import uuid
 from collections import namedtuple
-from datetime import datetime, timezone
 
+import accounts
 import core
 
 # Claude treats its cached usage as stale past this age (OZr in the 2.1.260 binary).
@@ -144,7 +143,7 @@ def read_utilization(utilization):
                 scope=entry.get("scope"),
                 group=entry["group"],
                 remaining=100 - entry["percent"],
-                resets_at=_parse_time(entry.get("resets_at")),
+                resets_at=accounts.parse_time(entry.get("resets_at")),
             )
             for entry in entries
         ]
@@ -196,15 +195,6 @@ def _is_locked(utilization):
     )
 
 
-def _parse_time(value):
-    """A bare timestamp would raise when compared against an aware `now`, deep
-    inside the decision."""
-    if not value:
-        return None
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-
-
 Paths = namedtuple("Paths", "config_path config_dir accounts_dir")
 
 
@@ -231,73 +221,6 @@ def inspect_reading(paths, now):
     return active, read_limits(config, now), fetched_at
 
 
-def has_parked_credential(store, account_id):
-    """An account whose parked credential went missing cannot be rotated to,
-    and the only way to find out is to look."""
-    return store.read_parked(account_id) is not None
-
-
-def load_accounts(paths, names):
-    """Enrolled accounts in the configured preference order. An unknown name is
-    skipped rather than fatal, so a typo cannot stop rotation entirely."""
-    by_name = {}
-    for filename in sorted(os.listdir(paths.accounts_dir)):
-        if filename.startswith(".") or not filename.endswith(".json"):
-            continue
-        identifier = filename[: -len(".json")]
-        try:
-            stored = _load_account(paths, identifier)
-        except (OSError, ValueError):
-            continue
-        by_name[stored.get("name", identifier)] = core.Account(
-            id=identifier,
-            name=stored.get("name", identifier),
-            snapshot=snapshot_from_json(stored.get("snapshot")),
-        )
-    if not names:
-        return [by_name[name] for name in sorted(by_name)]
-    return [by_name[name] for name in names if name in by_name]
-
-
-def snapshot_to_json(snapshot):
-    if snapshot == "locked":
-        return snapshot
-    if not isinstance(snapshot, list):
-        # A restriction is worth recording. Not knowing is not, so "unknown"
-        # stores as never parked.
-        return None
-    return [
-        {
-            "kind": entry.kind,
-            "scope": entry.scope,
-            "group": entry.group,
-            "remaining": entry.remaining,
-            "resets_at": entry.resets_at.isoformat() if entry.resets_at else None,
-        }
-        for entry in snapshot
-    ]
-
-
-def snapshot_from_json(stored):
-    """Anything unrecognised reads as never parked. A hand-edited account file
-    must not take rotation out for every account."""
-    if stored is None or stored == "locked":
-        return stored
-    try:
-        return [
-            core.Limit(
-                kind=entry["kind"],
-                scope=entry["scope"],
-                group=entry["group"],
-                remaining=entry["remaining"],
-                resets_at=_parse_time(entry["resets_at"]),
-            )
-            for entry in stored
-        ]
-    except (KeyError, TypeError, ValueError):
-        return None
-
-
 def enrol(paths, store, name, source_config_dir=None):
     """Copy an existing login into grazr's keeping. Authentication is always
     Claude's own `claude auth login`; grazr never sees a password. `source_config_dir`
@@ -316,15 +239,15 @@ def enrol(paths, store, name, source_config_dir=None):
 
     with open(config_path) as handle:
         identity = (json.load(handle).get("oauthAccount") or {})
-    account_id = _account_id(identity.get("accountUuid"))
+    account_id = accounts.account_id(identity.get("accountUuid"))
 
     # Accounts are looked up by name, so a duplicate hides one of them for good.
-    for existing in load_accounts(paths, []):
+    for existing in accounts.load(paths, []):
         if existing.name == name and existing.id != account_id:
             raise RuntimeError("the name %r is already used by another account" % name)
 
     store.write_parked(account_id, blob)
-    _save_account(
+    accounts.write(
         paths,
         account_id,
         {
@@ -367,7 +290,7 @@ def rotate(paths, store, active_id, next_id, snapshot):
     arriving = store.read_parked(next_id)
     if arriving is None:
         raise RuntimeError("no parked credential for %s; enrol it again" % next_id)
-    identity = _load_account(paths, next_id)["oauthAccount"]
+    identity = accounts.read(paths, next_id)["oauthAccount"]
 
     # Both locks before the first write. The identity write comes last, but its
     # lock can be busy too, and refusing after the credential moved is the whole
@@ -400,7 +323,7 @@ def rotate(paths, store, active_id, next_id, snapshot):
             renew()
         _merge_oauth_account(paths.config_path, identity)
 
-    _record_snapshot(paths, active_id, snapshot)
+    accounts.record_snapshot(paths, active_id, snapshot)
     return _expired_note(arriving)
 
 
@@ -470,50 +393,6 @@ def _carry_shared_keys(arriving, leaving):
         return arriving
     incoming.update(carried)
     return json.dumps(incoming)
-
-
-def _account_id(value):
-    """The server's account id becomes a filename and a keychain service, so it
-    has to be a plain uuid and nothing else."""
-    try:
-        # Compared case-insensitively: some providers return uppercase, and it
-        # is the same account. The canonical lowercase form is what gets used.
-        canonical = str(uuid.UUID(str(value)))
-        if canonical == value.lower():
-            return canonical
-    except (AttributeError, TypeError, ValueError):
-        pass
-    raise RuntimeError("that login has no usable account identity: %r" % (value,))
-
-
-def _load_account(paths, account_id):
-    with open(os.path.join(paths.accounts_dir, account_id + ".json")) as handle:
-        return json.load(handle)
-
-
-def _record_snapshot(paths, account_id, snapshot):
-    """Best-effort: the swap has already happened, so an account we never
-    enrolled is nothing to record against rather than a reason to fail."""
-    try:
-        account = _load_account(paths, account_id)
-    except (OSError, ValueError):
-        return
-    account["snapshot"] = snapshot_to_json(snapshot)
-    _save_account(paths, account_id, account)
-
-
-def _save_account(paths, account_id, account):
-    """Metadata only -- never a secret. The credential lives in the store."""
-    handle, temporary = tempfile.mkstemp(dir=paths.accounts_dir, prefix=".grazr-")
-    try:
-        with os.fdopen(handle, "w") as writer:
-            json.dump(account, writer, indent=2)
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, os.path.join(paths.accounts_dir, account_id + ".json"))
-    except BaseException:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-        raise
 
 
 def _write_oauth_account(config_path, oauth_account):

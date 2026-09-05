@@ -1,9 +1,9 @@
 """grazr — rotate to a fresh Claude account before the current one runs out.
 
 Entry points: hook (a Herdr event), enrol and status (popup panes).
-All Herdr and filesystem I/O lives here; Claude knowledge lives in claude.py;
-where credentials are kept lives in stores.py; the decision itself is
-core.decide.
+All Herdr I/O lives here. Claude's own files and endpoint live in claude.py,
+the accounts grazr enrolled in accounts.py, where credentials are kept in
+stores.py, and the decision itself is core.decide.
 """
 
 import contextlib
@@ -21,6 +21,7 @@ import tty
 from collections import namedtuple
 from datetime import datetime, timezone
 
+import accounts
 import claude
 import core
 import stores
@@ -507,8 +508,8 @@ def hook():
         swapped_to, its_limits = claude.inspect(paths, now)
         if swapped_to != active:
             active, limits = swapped_to, its_limits
-        accounts = claude.load_accounts(paths, config.accounts)
-        decision = core.decide(limits, active, accounts, now, config.thresholds)
+        enrolled = accounts.load(paths, config.accounts)
+        decision = core.decide(limits, active, enrolled, now, config.thresholds)
         # Only a decision to move pays for the settings.json read, so the common
         # path is unchanged. rotate refuses this too, but a raised error suits
         # the person who just pressed a key, not every turn end of every pane.
@@ -517,14 +518,14 @@ def hook():
             if override:
                 decision = ("override", override)
         line = act_on(
-            decision, paths, store, state_dir, active, limits, config.dry_run, accounts, now
+            decision, paths, store, state_dir, active, limits, config.dry_run, enrolled, now
         )
 
     # Outside the lock. Two herdr calls per pane, capped at five seconds each,
     # is far too long to hold the thing every other pane's hook is waiting on,
     # and a tag is worth none of that.
     if _moved(decision, config.dry_run):
-        tag_all(_name_of(accounts, decision[1]))
+        tag_all(_name_of(enrolled, decision[1]))
 
     if line:
         print(line)
@@ -609,8 +610,8 @@ def _somewhere_to_go(paths, config, active, now):
     """Whether any enrolled account could take over. The live reading exists to
     decide a rotation, so with nowhere to rotate to it decides nothing, and the
     endpoint is undocumented and rate-limited enough to be worth not asking."""
-    accounts = claude.load_accounts(paths, config.accounts)
-    return core.next_account(active, accounts, now, config.thresholds) is not None
+    enrolled = accounts.load(paths, config.accounts)
+    return core.next_account(active, enrolled, now, config.thresholds) is not None
 
 
 def _fetch_due(state_dir, interval):
@@ -691,7 +692,7 @@ def tag():
     if active is None:
         return 0
     named = next(
-        (entry.name for entry in claude.load_accounts(paths, []) if entry.id == active),
+        (entry.name for entry in accounts.load(paths, []) if entry.id == active),
         active,
     )
     pane_id = os.environ.get("HERDR_PANE_ID")
@@ -714,10 +715,10 @@ def swap():
         active, limits = claude.inspect(paths, now)
         if active is None:
             return _refuse_swap("not logged in, nothing to swap from")
-        accounts = claude.load_accounts(paths, config.accounts)
-        next_id = core.next_account(active, accounts, now, config.thresholds)
+        enrolled = accounts.load(paths, config.accounts)
+        next_id = core.next_account(active, enrolled, now, config.thresholds)
         if next_id is None:
-            soonest = _soonest_reset(now, *(entry.snapshot for entry in accounts))
+            soonest = _soonest_reset(now, *(entry.snapshot for entry in enrolled))
             return _refuse_swap(
                 "nothing to swap to, earliest reset %s" % (soonest or "unknown")
             )
@@ -725,12 +726,12 @@ def swap():
         print(
             act_on(
                 decision, paths, store, state_dir, active, limits,
-                config.dry_run, accounts, now,
+                config.dry_run, enrolled, now,
             )
         )
 
     if _moved(decision, config.dry_run):
-        tag_all(_name_of(accounts, next_id))
+        tag_all(_name_of(enrolled, next_id))
     return 0
 
 
@@ -753,23 +754,23 @@ def status():
           % (config.thresholds["session"], config.thresholds["weekly"],
              "   DRY_RUN" if config.dry_run else ""))
 
-    accounts = claude.load_accounts(paths, config.accounts)
-    for account in accounts:
+    enrolled = accounts.load(paths, config.accounts)
+    for account in enrolled:
         marker = "*" if account.id == active else " "
-        parked = "parked" if claude.has_parked_credential(store, account.id) else "NO CREDENTIAL"
+        parked = "parked" if accounts.has_parked_credential(store, account.id) else "NO CREDENTIAL"
         print("%s %-16s %-14s %s" % (marker, account.name, parked, _describe(account.snapshot)))
 
     for name in config.accounts:
-        if not any(account.name == name for account in accounts):
+        if not any(account.name == name for account in enrolled):
             print("  %-16s not enrolled, so it is never used" % name)
 
     print("\nactive account headroom: %s" % _describe(limits))
     if limits == "unknown":
         print("  (usage describes another account or is over an hour old)")
-    if active and not any(account.id == active for account in accounts):
+    if active and not any(account.id == active for account in enrolled):
         # Enrolled but left out of ACCOUNTS is the likelier mistake, and calling
         # that "not enrolled" sends you off to enrol it a second time.
-        enrolled = any(account.id == active for account in claude.load_accounts(paths, []))
+        enrolled = any(account.id == active for account in accounts.load(paths, []))
         print("  this login is %s; grazr can rotate away but not back"
               % ("enrolled but missing from ACCOUNTS" if enrolled else "not enrolled"))
 

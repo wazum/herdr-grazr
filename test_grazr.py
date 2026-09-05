@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest import mock
 
+import accounts
 import claude
 import grazr
 import stores
@@ -607,8 +608,8 @@ class HasParkedCredentialTest(unittest.TestCase):
     def test_a_parked_account_answers_true_a_missing_one_false(self):
         store = FakeStore(parked={"uuid-work": "BLOB"})
 
-        self.assertTrue(claude.has_parked_credential(store, "uuid-work"))
-        self.assertFalse(claude.has_parked_credential(store, "uuid-personal"))
+        self.assertTrue(accounts.has_parked_credential(store, "uuid-work"))
+        self.assertFalse(accounts.has_parked_credential(store, "uuid-personal"))
 
 
 class CredentialInstallTest(unittest.TestCase):
@@ -1419,7 +1420,7 @@ class RotateTest(unittest.TestCase):
 
         with mock.patch.object(claude.json, "dump", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
-                claude._save_account(self.paths, "uuid-work", {"name": "work"})
+                accounts.write(self.paths, "uuid-work", {"name": "work"})
 
         self.assertEqual(set(os.listdir(self.accounts_dir)), before)
 
@@ -1438,7 +1439,7 @@ class RotateTest(unittest.TestCase):
         self.run_rotate(snapshot=spent)
 
         stored = self.read_account("uuid-work")["snapshot"]
-        self.assertEqual(claude.snapshot_from_json(stored), spent)
+        self.assertEqual(accounts.snapshot_from_json(stored), spent)
 
     def test_an_account_that_was_never_parked_aborts_before_any_write(self):
         del self.store.parked["uuid-personal"]
@@ -1508,7 +1509,7 @@ class SnapshotRoundTripTest(unittest.TestCase):
             limit(group="weekly", remaining=40, kind="weekly_scoped", scope="Fable", resets_at=None),
         ]
 
-        restored = claude.snapshot_from_json(json.loads(json.dumps(claude.snapshot_to_json(limits))))
+        restored = accounts.snapshot_from_json(json.loads(json.dumps(accounts.snapshot_to_json(limits))))
 
         self.assertEqual(restored, limits)
 
@@ -1517,13 +1518,13 @@ class SnapshotRoundTripTest(unittest.TestCase):
         would otherwise take out rotation for every account."""
         for garbage in ("SNAPSHOT", 42, {"kind": "session"}, [{"nope": 1}]):
             with self.subTest(garbage=garbage):
-                self.assertIsNone(claude.snapshot_from_json(garbage))
+                self.assertIsNone(accounts.snapshot_from_json(garbage))
 
     def test_locked_survives_a_round_trip(self):
-        self.assertEqual(claude.snapshot_from_json(claude.snapshot_to_json("locked")), "locked")
+        self.assertEqual(accounts.snapshot_from_json(accounts.snapshot_to_json("locked")), "locked")
 
     def test_never_parked_survives_a_round_trip(self):
-        self.assertIsNone(claude.snapshot_from_json(claude.snapshot_to_json(None)))
+        self.assertIsNone(accounts.snapshot_from_json(accounts.snapshot_to_json(None)))
 
 
 class InspectTest(unittest.TestCase):
@@ -1578,11 +1579,11 @@ class InspectTest(unittest.TestCase):
         self.write_account("uuid-work", {"name": "work"})
         self.write_account("uuid-personal", {"name": "personal", "snapshot": "locked"})
 
-        accounts = claude.load_accounts(self.paths, ["personal", "work"])
+        enrolled = accounts.load(self.paths, ["personal", "work"])
 
-        self.assertEqual([account.name for account in accounts], ["personal", "work"])
-        self.assertEqual(accounts[0].id, "uuid-personal")
-        self.assertEqual(accounts[0].snapshot, "locked")
+        self.assertEqual([account.name for account in enrolled], ["personal", "work"])
+        self.assertEqual(enrolled[0].id, "uuid-personal")
+        self.assertEqual(enrolled[0].snapshot, "locked")
 
     def test_one_corrupt_account_file_does_not_hide_the_others(self):
         """The store is read whole on the rotate path, so a single bad file
@@ -1591,7 +1592,7 @@ class InspectTest(unittest.TestCase):
         with open(os.path.join(self.accounts_dir, "uuid-broken.json"), "w") as handle:
             handle.write("{not json at all")
 
-        self.assertEqual([a.name for a in claude.load_accounts(self.paths, [])], ["work"])
+        self.assertEqual([a.name for a in accounts.load(self.paths, [])], ["work"])
 
     def test_it_ignores_anything_that_is_not_an_account_file(self):
         """The directory also holds grazr's own atomic-write leftovers."""
@@ -1600,14 +1601,14 @@ class InspectTest(unittest.TestCase):
             with open(os.path.join(self.accounts_dir, debris), "w") as handle:
                 handle.write("not an account")
 
-        self.assertEqual([a.name for a in claude.load_accounts(self.paths, [])], ["work"])
+        self.assertEqual([a.name for a in accounts.load(self.paths, [])], ["work"])
 
     def test_an_empty_preference_list_falls_back_to_every_enrolled_account(self):
         self.write_account("uuid-work", {"name": "work"})
         self.write_account("uuid-personal", {"name": "personal"})
 
         self.assertEqual(
-            sorted(account.name for account in claude.load_accounts(self.paths, [])),
+            sorted(account.name for account in accounts.load(self.paths, [])),
             ["personal", "work"],
         )
 
@@ -2729,7 +2730,7 @@ class HookTest(EnrolledPairFixture):
         reads = []
 
         with mock.patch.object(
-            claude, "load_accounts", lambda paths, names: reads.append(names) or []
+            accounts, "load", lambda paths, names: reads.append(names) or []
         ):
             self.run_hook()
 
