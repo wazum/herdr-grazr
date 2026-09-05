@@ -6,6 +6,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Added
+
+- A sidebar tag. *grazr* publishes the active account to every Claude pane as
+  a `$grazr` token, set when Claude starts in a pane and refreshed after every
+  rotation. Herdr shows a token only where your own sidebar row names it, so
+  the README has the row to add. A pane you have scrolled up in is skipped,
+  because repainting a pane's metadata can jump it to the bottom.
+
 ### Fixed
 
 - A swap no longer signs you out of your MCP servers. Claude keeps their

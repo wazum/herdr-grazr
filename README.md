@@ -169,11 +169,51 @@ see what is enrolled and what each account has left:
 herdr plugin pane open --plugin wazum.grazr --entrypoint status
 ```
 
+### Remote Control disconnects
+
 Claude's Remote Control belongs to the signed-in account, so it disconnects on
 every swap. Restart it with `/remote-control` in each pane you care about.
 *grazr* says so in its notification, but it will not type the command for you.
 That would mean writing into panes that may be mid-turn, and *grazr* never
 touches the screen.
+
+### The account in your sidebar
+
+A toast is gone in three seconds. *grazr* also publishes the active account as
+a `$grazr` token on every Claude pane, so the sidebar keeps saying which
+account you are on.
+
+<p align="center">
+  <img src="docs/sidebar-tag.png" alt="grazr's tag in the Herdr sidebar: this pane is on the account named work" width="574">
+</p>
+
+Herdr shows a token only where your own sidebar row asks for it. Add `$grazr`
+to a row in `~/.config/herdr/config.toml`, keeping whatever rows you already
+have:
+
+```toml
+[ui.sidebar.agents]
+rows = [
+  ["state_icon", "workspace", "tab"],
+  [{ token = "agent" }],
+  [{ token = "$grazr", fg = "#b5ead7" }],
+  [{ token = "terminal_title_stripped" }],
+]
+```
+
+Each entry in `rows` is one line. Give the tag its own: a row carrying three
+tokens truncates before it reaches the third.
+
+Then run `herdr server reload-config`. A pane picks up the tag when Claude
+starts in it, and a rotation repaints every pane. Panes already open when you
+added the row are still blank, so fill them in once:
+
+```sh
+herdr plugin action invoke wazum.grazr.tag
+```
+
+A pane you have scrolled up in is skipped until you scroll back down, because
+repainting a pane's metadata can jump it to the bottom.
 
 ## What it will not do
 

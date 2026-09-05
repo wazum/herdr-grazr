@@ -9,12 +9,23 @@ platforms = ["macos", "linux"]
 on = "pane.agent_status_changed"
 command = ["python3", "grazr.py", "hook"]
 
+[[events]]
+on = "pane.agent_detected"
+command = ["python3", "grazr.py", "tag"]
+
 [[actions]]
 id = "swap"
 title = "grazr: swap to the next account now"
 description = "Move to the first account in ACCOUNTS with headroom, without waiting for the threshold"
 contexts = ["global", "workspace"]
 command = ["python3", "grazr.py", "swap"]
+
+[[actions]]
+id = "tag"
+title = "grazr: tag every pane with the active account"
+description = "Publish the $grazr token to every Claude pane, for after you add the sidebar row"
+contexts = ["global", "workspace"]
+command = ["python3", "grazr.py", "tag"]
 
 [[panes]]
 id = "enrol"

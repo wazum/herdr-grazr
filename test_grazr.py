@@ -1906,6 +1906,70 @@ class PathResolutionTest(unittest.TestCase):
         self.assertEqual(paths.config_path, os.path.expanduser("~/.claude.json"))
 
 
+class PaneTagTest(unittest.TestCase):
+    """The sidebar tag. Herdr shows it only where the user's own row names
+    `$grazr`, so publishing it is all grazr can do about it."""
+
+    def setUp(self):
+        self.reported = []
+
+    def spawn(self, argv, **kwargs):
+        """Stands in for `herdr`, answering agent list and recording reports."""
+        if argv[1:3] == ["agent", "list"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps(self.agents))
+        if argv[1:3] == ["pane", "get"]:
+            # The shape herdr 0.8.2 really answers with.
+            offset = 12 if argv[3] in self.scrolled else 0
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {"result": {"pane": {"scroll": {"offset_from_bottom": offset}}}}
+                ),
+            )
+        self.reported.append(argv)
+        return SimpleNamespace(returncode=0, stdout="")
+
+    def agent(self, pane_id, agent="claude", tag=None):
+        tokens = {"quota_model": "Opus 5"}
+        if tag is not None:
+            tokens["grazr"] = tag
+        return {"agent": agent, "pane_id": pane_id, "tokens": tokens}
+
+    def tag_all(self, agents, scrolled=()):
+        self.agents = {"result": {"agents": agents}}
+        self.scrolled = set(scrolled)
+        with mock.patch.dict(os.environ, {"HERDR_BIN_PATH": "/usr/bin/herdr"}):
+            grazr.tag_all("personal", spawn=self.spawn)
+        return [argv[3] for argv in self.reported]
+
+    def test_it_tags_a_pane_that_shows_another_account(self):
+        self.assertEqual(self.tag_all([self.agent("w1:p1", tag="work")]), ["w1:p1"])
+
+    def test_a_pane_already_showing_the_account_is_left_alone(self):
+        """A rotation repaints every Claude pane at once. Only the ones that
+        actually change are worth the call."""
+        self.assertEqual(self.tag_all([self.agent("w1:p1", tag="personal")]), [])
+
+    def test_a_pane_running_another_agent_is_never_tagged(self):
+        """Codex and the rest spend no Claude account, so a tag on one would be
+        a claim about an account it never touches."""
+        self.assertEqual(self.tag_all([self.agent("w1:pB", agent="codex")]), [])
+
+    def test_a_pane_you_have_scrolled_up_in_is_left_alone(self):
+        """Herdr can snap a scrolled viewport back to the bottom when it
+        repaints metadata. grazr's whole promise is that a pane you were not
+        watching never shows that anything changed."""
+        panes = [self.agent("w1:p1", tag="work"), self.agent("w2:p1", tag="work")]
+
+        self.assertEqual(self.tag_all(panes, scrolled=["w1:p1"]), ["w2:p1"])
+
+    def test_the_token_carries_the_account_name(self):
+        self.tag_all([self.agent("w1:p1", tag="work")])
+
+        self.assertIn("--token", self.reported[0])
+        self.assertIn("grazr=personal", self.reported[0])
+
+
 class NotifyTest(unittest.TestCase):
     """`herdr notification show` exits 0 even when it shows nothing: toasts are
     off by default, a toast already on screen returns busy, and there is a rate
@@ -1972,6 +2036,10 @@ class ActOnDecisionTest(unittest.TestCase):
         self.store = FakeStore()
         self.rotations = []
         self.notices = []
+        self.tags = []
+        patch = mock.patch.object(grazr, "tag_all", lambda name: self.tags.append(name))
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def record_notice(self, title, body):
         """Stands in for grazr.notify, which reports whether Herdr showed it."""
@@ -2004,6 +2072,14 @@ class ActOnDecisionTest(unittest.TestCase):
             )
 
         self.assertIn("its token had expired", line)
+
+    def test_a_rotation_repaints_the_pane_tags(self):
+        """Every pane names the account it spends, so after a swap they all
+        name a different one."""
+        self.act(("rotate", "uuid-personal"),
+                 accounts=[account_named("personal", "uuid-personal")])
+
+        self.assertEqual(self.tags, ["personal"])
 
     def test_staying_is_silent(self):
         self.act("stay")
@@ -2170,6 +2246,7 @@ class EnrolledPairFixture(unittest.TestCase):
         self.write_config('ACCOUNTS="work personal"\n')
         self.rotations = []
         self.notices = []
+        self.tags = []
 
     def write_config(self, text):
         with open(os.path.join(self.state_dir, "config.env"), "w") as handle:
@@ -2197,6 +2274,9 @@ class EnrolledPairFixture(unittest.TestCase):
     def invoke(self, entry, **environment):
         """Run an entry point against the fixture, recording rotations instead
         of performing them. Returns (exit code, what it printed)."""
+        # Empty unless a test names one: the suite runs inside a herdr pane,
+        # whose id would otherwise leak in.
+        environment.setdefault("HERDR_PANE_ID", "")
         environment.update(
             HERDR_PLUGIN_STATE_DIR=self.state_dir,
             HERDR_PLUGIN_CONFIG_DIR=self.state_dir,
@@ -2207,6 +2287,10 @@ class EnrolledPairFixture(unittest.TestCase):
             claude, "rotate", lambda *arguments: self.rotations.append(arguments)
         ), mock.patch.object(
             grazr, "notify", lambda title, body: self.notices.append((title, body)) or True
+        ), mock.patch.object(
+            grazr, "tag_all", lambda name: self.tags.append(name)
+        ), mock.patch.object(
+            grazr, "tag_pane", lambda pane, name: self.tags.append((pane, name))
         ), contextlib.redirect_stdout(printed):
             return entry(), printed.getvalue()
 
@@ -2233,6 +2317,19 @@ class HookTest(EnrolledPairFixture):
                 ),
                 handle,
             )
+
+    def test_without_a_pane_of_its_own_it_tags_every_pane(self):
+        """A Herdr action carries no pane id. That is the one you press after
+        adding the sidebar row, when every open pane is still blank."""
+        self.invoke(grazr.tag)
+
+        self.assertEqual(self.tags, ["work"])
+
+    def test_a_new_pane_is_tagged_with_the_account_it_will_spend(self):
+        """Otherwise a pane opened between rotations sits untagged for hours."""
+        self.invoke(grazr.tag, HERDR_PANE_ID="w9:p1")
+
+        self.assertEqual(self.tags, [("w9:p1", "work")])
 
     def test_an_auth_setting_is_reported_once_not_on_every_turn_end(self):
         """A settings.json auth key is a standing situation, like a restricted

@@ -87,6 +87,77 @@ def notify(title, body, spawn=subprocess.run):
         return False
 
 
+TAG = "grazr"
+
+# A rotation reports to every Claude pane, so none of them may hang.
+TAG_TIMEOUT_SECONDS = 5
+
+
+def tag_all(name, spawn=subprocess.run):
+    """Publish the active account to every Claude pane as the `$grazr` token.
+
+    Herdr shows it only where the user's own sidebar row names `$grazr`, so
+    without that row nothing appears. Best-effort: a tag is never worth
+    failing a rotation over.
+    """
+    for pane_id, tokens in _claude_panes(spawn):
+        if tokens.get(TAG) != name:
+            tag_pane(pane_id, name, spawn)
+
+
+def tag_pane(pane_id, name, spawn=subprocess.run):
+    """One pane, unless it is being read. Herdr can snap a scrolled viewport
+    back to the bottom when it repaints metadata, and a pane nobody was
+    watching must not jump because another pane rotated."""
+    if not pane_id or _is_scrolled(pane_id, spawn):
+        return
+    _herdr(spawn, "pane", "report-metadata", pane_id, "--source", TAG,
+           "--token", "%s=%s" % (TAG, name))
+
+
+def _claude_panes(spawn):
+    """(pane id, current tokens) for every pane running Claude, and nothing for
+    the other agents: they spend no Claude account."""
+    answer = _herdr(spawn, "agent", "list")
+    try:
+        agents = json.loads(answer)["result"]["agents"]
+    except (KeyError, TypeError, ValueError):
+        return []
+    return [
+        (entry.get("pane_id"), entry.get("tokens") or {})
+        for entry in agents
+        if isinstance(entry, dict) and entry.get("agent") == "claude" and entry.get("pane_id")
+    ]
+
+
+def _is_scrolled(pane_id, spawn):
+    answer = _herdr(spawn, "pane", "get", pane_id)
+    try:
+        scroll = json.loads(answer)["result"]["pane"]["scroll"]
+        return scroll["offset_from_bottom"] > 0
+    except (KeyError, TypeError, ValueError):
+        # Repainting a pane someone is reading is the worse mistake, so an
+        # unreadable answer counts as scrolled.
+        return True
+
+
+def _herdr(spawn, *arguments):
+    """Returns stdout, or "" for anything that went wrong."""
+    herdr = os.environ.get("HERDR_BIN_PATH")
+    if not herdr:
+        return ""
+    try:
+        completed = spawn(
+            [herdr, *arguments],
+            capture_output=True,
+            text=True,
+            timeout=TAG_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return completed.stdout if completed.returncode == 0 else ""
+
+
 def act_on(decision, paths, store, state_dir, active_id, limits, dry_run, accounts=(), now=None):
     """Carry out what core.decide concluded, and report it. Returns the line
     that goes to stdout, which Herdr keeps in `herdr plugin log`."""
@@ -149,6 +220,7 @@ def act_on(decision, paths, store, state_dir, active_id, limits, dry_run, accoun
     # The marker is the dedupe key too. Leaving the situation this rotation
     # just resolved on it would silence that situation the next time it is real.
     _write_marker(os.path.join(state_dir, "last_notice"), line, shown)
+    tag_all(name_of(next_id))
     return line
 
 
@@ -471,8 +543,31 @@ def _dispatch(argv):
         return enrol()
     if command == "swap":
         return swap()
-    print("usage: grazr.py hook|status|enrol|swap", file=sys.stderr)
+    if command == "tag":
+        return tag()
+    print("usage: grazr.py hook|status|enrol|swap|tag", file=sys.stderr)
     return 2
+
+
+def tag():
+    """Name the account being spent. The pane event carries a pane id and tags
+    that pane, so a new pane is not blank until the next rotation. The action
+    carries none and tags every pane, which is what you press after adding the
+    sidebar row."""
+    paths, _, _ = _paths()
+    active, _ = claude.inspect(paths, datetime.now(timezone.utc))
+    if active is None:
+        return 0
+    named = next(
+        (entry.name for entry in claude.load_accounts(paths, []) if entry.id == active),
+        active,
+    )
+    pane_id = os.environ.get("HERDR_PANE_ID")
+    if pane_id:
+        tag_pane(pane_id, named)
+    else:
+        tag_all(named)
+    return 0
 
 
 def swap():
