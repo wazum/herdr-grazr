@@ -28,6 +28,11 @@ import stores
 
 Config = namedtuple("Config", "thresholds accounts enabled dry_run live_usage_below")
 
+# The last situation grazr reported, and whether Herdr really showed its toast.
+# The two are stored together because a situation still on screen and one that
+# went unseen are answered differently.
+Notice = namedtuple("Notice", "key notified")
+
 DEFAULT_CONFIG = """\
 # Rotate when a limit group has less than this percent left. Claude's cached
 # reading runs behind the window, so leave more room than you mean to lose.
@@ -231,7 +236,7 @@ def act_on(decision, paths, store, state_dir, active_id, limits, dry_run, accoun
     )
     # The marker is the dedupe key too. Leaving the situation this rotation
     # just resolved on it would silence that situation the next time it is real.
-    _write_marker(os.path.join(state_dir, "last_notice"), line, shown)
+    _write_notice(state_dir, Notice(line, shown))
     return line
 
 
@@ -270,26 +275,30 @@ def _announce_once(state_dir, key, title, body):
     Returns whether this situation is new, which is what earns a log line. The
     branches that call it are reached on every idle event of every pane.
     """
-    marker = os.path.join(state_dir, "last_notice")
-    seen, notified = None, False
-    try:
-        with open(marker) as handle:
-            seen, _, flag = handle.read().partition("\n")
-            notified = flag == "1"
-    except IOError:
-        pass
-
-    if seen == key:
-        if not notified and notify(title, body):
-            _write_marker(marker, key, True)
+    last = _read_notice(state_dir)
+    if last.key == key:
+        if not last.notified and notify(title, body):
+            _write_notice(state_dir, Notice(key, True))
         return False
 
-    _write_marker(marker, key, notify(title, body))
+    _write_notice(state_dir, Notice(key, notify(title, body)))
     return True
 
 
-def _write_marker(marker, key, notified):
-    atomic.write(marker, "%s\n%s" % (key, "1" if notified else "0"))
+def _read_notice(state_dir):
+    try:
+        with open(os.path.join(state_dir, "last_notice")) as handle:
+            key, _, flag = handle.read().partition("\n")
+    except IOError:
+        return Notice(None, False)
+    return Notice(key, flag == "1")
+
+
+def _write_notice(state_dir, notice):
+    atomic.write(
+        os.path.join(state_dir, "last_notice"),
+        "%s\n%s" % (notice.key, "1" if notice.notified else "0"),
+    )
 
 
 
@@ -769,12 +778,10 @@ def status():
 
 
 def _last_decision(state_dir):
-    try:
-        with open(os.path.join(state_dir, "last_notice")) as handle:
-            key, _, notified = handle.read().partition("\n")
-    except IOError:
+    notice = _read_notice(state_dir)
+    if notice.key is None:
         return None
-    return "%s%s" % (key, "" if notified == "1" else "  (toast never appeared)")
+    return "%s%s" % (notice.key, "" if notice.notified else "  (toast never appeared)")
 
 
 def _describe(snapshot):

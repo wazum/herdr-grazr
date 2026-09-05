@@ -2088,47 +2088,38 @@ class PaneTagTest(unittest.TestCase):
         self.assertIn("grazr=personal", self.reported[0])
 
 
-class SharedStateWriteTest(unittest.TestCase):
-    """Both files are written on the common path of every turn end, in every
-    pane, with no lock held."""
+class AtomicWriteTest(unittest.TestCase):
+    """Files several panes read with no lock between them."""
 
     def setUp(self):
         self.directory = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.directory, True)
+        self.path = os.path.join(self.directory, "shared")
+        with open(self.path, "w") as handle:
+            handle.write("the old contents")
 
-    def never_empty(self, path, write):
-        """Runs `write` against a file that already holds something, and reports
-        the size the target had at each replace. No replace at all means it was
-        truncated in place instead."""
-        with open(path, "w") as handle:
-            handle.write("already here")
+    def test_a_reader_never_finds_the_file_empty(self):
+        """The point of the whole exercise: the old contents stand until the
+        new ones are complete."""
         seen = []
         real_replace = os.replace
 
-        def watching_replace(source, target):
-            seen.append(os.path.getsize(target))
-            return real_replace(source, target)
+        with mock.patch.object(
+            atomic.os, "replace",
+            lambda source, target: seen.append(open(target).read()) or real_replace(source, target),
+        ):
+            atomic.write(self.path, "the new contents")
 
-        with mock.patch.object(os, "replace", watching_replace):
-            write()
-        return seen
+        self.assertEqual(seen, ["the old contents"])
+        with open(self.path) as handle:
+            self.assertEqual(handle.read(), "the new contents")
 
-    def test_the_notice_marker_is_swapped_in_whole(self):
-        marker = os.path.join(self.directory, "last_notice")
+    def test_a_write_that_fails_leaves_nothing_behind(self):
+        with mock.patch.object(atomic.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                atomic.write(self.path, "the new contents")
 
-        sizes = self.never_empty(marker, lambda: grazr._write_marker(marker, "key", True))
-
-        self.assertEqual(sizes, [len("already here")], "replaced, never truncated")
-
-    def test_the_reading_is_swapped_in_whole(self):
-        path = os.path.join(self.directory, "reading")
-        limits = [limit(group="session", remaining=50)]
-
-        sizes = self.never_empty(
-            path, lambda: grazr._record_reading(self.directory, "uuid-work", limits, 1000)
-        )
-
-        self.assertEqual(sizes, [len("already here")], "replaced, never truncated")
+        self.assertEqual(os.listdir(self.directory), ["shared"])
 
 
 class ReadingRecordTest(unittest.TestCase):
@@ -2899,6 +2890,13 @@ class FitnessTest(unittest.TestCase):
             {},
             "no module keeps its own copy",
         )
+
+    def test_grazr_writes_no_file_the_plain_way(self):
+        """A plain "w" empties a file before it fills it, and every file grazr
+        writes is one another pane may be reading."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "grazr.py")) as source:
+            self.assertNotIn(', "w")', source.read())
 
 
 if __name__ == "__main__":
