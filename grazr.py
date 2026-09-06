@@ -1,9 +1,11 @@
 """grazr — rotate to a fresh Claude account before the current one runs out.
 
-Entry points: hook (a Herdr event), enrol and status (popup panes).
-All Herdr I/O lives here. Claude's own files and endpoint live in claude.py,
-the accounts grazr enrolled in accounts.py, where credentials are kept in
-stores.py, and the decision itself is core.decide.
+Entry points: statusline (Claude's status-line command, after every message),
+decide (detached from it), tag (a Herdr event), install, uninstall and swap
+(Herdr actions), enrol and status (popup panes). All Herdr I/O lives here.
+Claude's own files live in claude.py, the accounts grazr enrolled in
+accounts.py, where credentials are kept in stores.py, and the decision itself
+is core.decide.
 """
 
 import contextlib
@@ -15,7 +17,6 @@ import shlex
 import subprocess
 import sys
 import termios
-import time
 import tty
 from collections import namedtuple
 from datetime import datetime, timezone
@@ -26,18 +27,12 @@ import claude
 import core
 import stores
 
-Config = namedtuple("Config", "thresholds accounts enabled dry_run live_usage_below")
-
-# The last situation grazr reported, and whether Herdr really showed its toast.
-# The two are stored together because a situation still on screen and one that
-# went unseen are answered differently.
-Notice = namedtuple("Notice", "key notified")
+Config = namedtuple("Config", "thresholds accounts enabled dry_run")
 
 Runtime = namedtuple("Runtime", "paths store state_dir config")
 
 DEFAULT_CONFIG = """\
-# Rotate when a limit group has less than this percent left. Claude's cached
-# reading runs behind the window, so leave more room than you mean to lose.
+# Rotate when a limit group has less than this percent left.
 REMAINING_SESSION=30     # the 5-hour window
 REMAINING_WEEKLY=20      # weekly windows, incl. per-model ones
 
@@ -46,34 +41,13 @@ ACCOUNTS=""
 
 ENABLED=1
 DRY_RUN=0                # 1 = log the decision, do not swap
-
-# Below this much headroom, grazr asks the same endpoint Claude asks. Keep it
-# higher than the thresholds above. The gap between the two is the band grazr
-# watches in, wide enough to catch a reading that runs behind before it crosses
-# the line. 0 turns the call off and leaves grazr with the cached reading.
-LIVE_USAGE_BELOW=45
 """
 
 _THRESHOLD_KEYS = {"REMAINING_SESSION": ("session", 30), "REMAINING_WEEKLY": ("weekly", 20)}
 _FLAG_KEYS = (("ENABLED", True), ("DRY_RUN", False))
 
-
-TURN_ENDS = ("idle", "done")
-
-# Telling the user is worth a moment, but not a stuck hook on every turn end.
+# Telling the user is worth a moment, but not a stuck status line.
 NOTIFY_TIMEOUT_SECONDS = 5
-
-# The floor between two live usage calls, however many panes are idling. With
-# an account able to take over, the call decides a swap and the forecast looks
-# this far ahead, and at a heavy pace a minute is already a lot of window. With
-# nowhere to go the call buys a warning and a pace to measure from, not a swap,
-# and the blind spell runs for hours.
-LIVE_FETCH_INTERVAL_SECONDS = 60
-BLIND_FETCH_INTERVAL_SECONDS = 1800
-
-# Claude refreshes its cache on its own schedule, and a burst across several
-# panes can spend a comfortable window between two refreshes.
-TRUST_CACHE_FOR_SECONDS = 300
 
 
 def notify(title, body, spawn=subprocess.run):
@@ -188,13 +162,6 @@ def act_on(decision, runtime, active_id, limits, accounts=(), now=None):
     def name_of(identifier):
         return _name_of(accounts, identifier)
 
-    if decision == "locked":
-        line = "account %s is restricted, not rotating" % name_of(active_id)
-        announced = _announce_once(
-            state_dir, "locked:%s" % active_id, "grazr: account restricted", line
-        )
-        return line if announced else None
-
     if decision == "unenrolled":
         line = "nothing to rotate to; enrol a second account and list it in ACCOUNTS"
         announced = _announce_once(
@@ -241,9 +208,9 @@ def act_on(decision, runtime, active_id, limits, accounts=(), now=None):
         "grazr: now on %s" % name_of(next_id),
         "Remote Control needs /remote-control per pane",
     )
-    # The marker is the dedupe key too. Leaving the situation this rotation
-    # just resolved on it would silence that situation the next time it is real.
-    _write_notice(state_dir, Notice(line, shown))
+    # A rotation resolves every open situation. Leaving them on record would
+    # silence each of them the next time it is real.
+    _write_notices(state_dir, {line: shown})
     return line
 
 
@@ -280,47 +247,38 @@ def _announce_once(state_dir, key, title, body):
     while another is on screen, so it is retried until it is really shown.
 
     Returns whether this situation is new, which is what earns a log line. The
-    branches that call it are reached on every idle event of every pane.
+    branches that call it are reached on every message of every pane, and two
+    panes reaching a new situation together would both call it new, so the
+    store is read and written under a lock. Every open situation is kept, or
+    two of them would evict each other and toast in turns.
     """
-    last = _read_notice(state_dir)
-    if last.key == key:
-        if not last.notified and notify(title, body):
-            _write_notice(state_dir, Notice(key, True))
-        return False
+    with _file_lock(os.path.join(state_dir, "notices.lock")) as held:
+        if not held:
+            return False
+        notices = _read_notices(state_dir)
+        if key in notices:
+            if not notices[key] and notify(title, body):
+                notices[key] = True
+                _write_notices(state_dir, notices)
+            return False
+        notices[key] = notify(title, body)
+        _write_notices(state_dir, notices)
+        return True
 
-    _write_notice(state_dir, Notice(key, notify(title, body)))
-    return True
 
-
-def _read_notice(state_dir):
+def _read_notices(state_dir):
     try:
-        with open(os.path.join(state_dir, "last_notice")) as handle:
-            key, _, flag = handle.read().partition("\n")
-    except IOError:
-        return Notice(None, False)
-    return Notice(key, flag == "1")
+        with open(os.path.join(state_dir, "notices.json")) as handle:
+            notices = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return notices if isinstance(notices, dict) else {}
 
 
-def _write_notice(state_dir, notice):
-    atomic.write(
-        os.path.join(state_dir, "last_notice"),
-        "%s\n%s" % (notice.key, "1" if notice.notified else "0"),
-    )
+def _write_notices(state_dir, notices):
+    atomic.write(os.path.join(state_dir, "notices.json"), json.dumps(notices))
 
 
-
-
-def is_turn_end(event_json):
-    """A Claude pane that just finished a turn. `done` is idle in a tab nobody
-    has looked at, so it counts too."""
-    try:
-        event = json.loads(event_json or "null")
-    except ValueError:
-        return False
-    data = event.get("data") if isinstance(event, dict) else None
-    if not isinstance(data, dict):
-        return False
-    return data.get("agent") == "claude" and data.get("agent_status") in TURN_ENDS
 
 
 def load_config(path):
@@ -359,22 +317,13 @@ def load_config(path):
     for key, (group, default) in _THRESHOLD_KEYS.items():
         thresholds[group] = _percent(settings.pop(key, None), key, default)
     flags = [_flag(settings.pop(key, None), key, default) for key, default in _FLAG_KEYS]
-    live_usage_below = _percent(
-        settings.pop("LIVE_USAGE_BELOW", None), "LIVE_USAGE_BELOW", 45
-    )
     accounts = shlex.split(settings.pop("ACCOUNTS", "") or "")
     if len(set(accounts)) != len(accounts):
         raise ValueError("ACCOUNTS lists the same account twice: %s" % " ".join(accounts))
     if settings:
         raise ValueError("unknown setting(s): %s" % ", ".join(sorted(settings)))
 
-    return Config(
-        thresholds=thresholds,
-        accounts=accounts,
-        enabled=flags[0],
-        dry_run=flags[1],
-        live_usage_below=live_usage_below,
-    )
+    return Config(thresholds=thresholds, accounts=accounts, enabled=flags[0], dry_run=flags[1])
 
 
 def _seed_config(path):
@@ -470,192 +419,154 @@ def _config_path():
     return os.path.join(directory, "config.env")
 
 
-def hook(runtime=None):
-    """Runs on every pane.agent_status_changed across every pane, so the common
-    path is two file reads and no subprocess."""
-    if not is_turn_end(os.environ.get("HERDR_PLUGIN_EVENT_JSON")):
-        return 0
+PREVIOUS_STATUSLINE = "statusline.previous.json"
+STATUSLINE_TIMEOUT_SECONDS = 5
+LOG = "grazr.log"
 
+
+def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
+    """Runs inside Claude after every message, with the status-line payload on
+    stdin. The bar stays the one configured before grazr. Claude cancels this
+    command when the next update arrives, so the swap runs detached, in
+    `decide`, where a kill cannot leave it half done."""
+    payload = sys.stdin.read() if payload is None else payload
     runtime = runtime or _runtime()
     paths, store, state_dir, config = runtime
+    print(_previous_bar(state_dir, payload, spawn), end="", flush=True)
+
     if not config.enabled:
         return 0
+    limits = claude.statusline_limits(payload)
+    if limits is None:
+        _warn_unreadable(state_dir, payload)
+        return 0
+    active = claude.active_account(paths)
+    if active is None or _left_behind(limits, active, accounts.load(paths, [])):
+        return 0
+    accounts.record_snapshot(paths, active, limits)
+    if core.needs_rotation(limits, datetime.now(timezone.utc), config.thresholds):
+        (detach or _detach_decide)()
+    return 0
 
+
+def _warn_unreadable(state_dir, payload):
+    """A Claude release that renames the field would leave grazr blind in
+    silence. A session that has not reached the API yet has no limits to send,
+    so only one that has counts."""
+    try:
+        sent = json.loads(payload)
+        spoken = sent["context_window"]["total_input_tokens"] > 0
+        version = sent.get("version", "unknown")
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return
+    if not spoken:
+        return
+    line = "Claude %s sends no rate limits in its status line, so grazr sees no usage" % version
+    if _announce_once(state_dir, "unreadable:%s" % version, "grazr: cannot read Claude's usage", line):
+        _log(state_dir, datetime.now(timezone.utc), line)
+
+
+def _detach_decide():
+    with open(os.path.join(_paths()[2], LOG), "a") as log:
+        subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "decide"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
+            start_new_session=True,
+        )
+
+
+def decide(runtime=None):
+    """Swap if the latest reading says so. Runs detached from the status line
+    that recorded it, so Claude cancelling that cannot stop a swap half way."""
+    runtime = runtime or _runtime()
+    paths, store, state_dir, config = runtime
     now = datetime.now(timezone.utc)
-    active, limits, fetched_at = claude.inspect_reading(paths, now)
-    if active is None:
-        return 0
-    decision_limits = limits
-
-    # _fetch_due stamps the interval as a side effect, so it goes last: a call
-    # refused for any other reason must not spend the next interval.
-    estimate = _estimate(state_dir, active, limits, fetched_at, now)
-    if (
-        _worth_asking(estimate, config.live_usage_below, _age_seconds(fetched_at, now))
-        # Ordered by what each costs to answer, cheapest first. An auth setting
-        # makes a swap change nothing, so the usage behind it is not worth a call.
-        and not claude.settings_auth_override(paths.config_dir)
-        and _fetch_due(state_dir, _interval(paths, config, active, estimate, now))
-    ):
-        answer = claude.fetch_limits(store)
-        if answer is None:
-            # Going on the cached reading is right, but doing it in silence
-            # lets a window run out while grazr looks like it is working.
-            line = "the usage endpoint did not answer, going on the cached reading"
-            if _announce_once(state_dir, "unconfirmed", "grazr: usage check failed", line):
-                print(line)
-        else:
-            # Decided on the forecast, recorded as seen.
-            limits = answer
-            rates = _record_reading(
-                state_dir, active, answer, now.timestamp() * 1000, "live_reading"
-            )
-            decision_limits = core.forecast(answer, rates, LIVE_FETCH_INTERVAL_SECONDS)
-
-    # The common path ends here: no account store, no lock, no subprocess.
-    if not core.needs_rotation(decision_limits, now, config.thresholds):
-        return 0
-
-    # Only the rotate and announce paths take the lock. The common path above
-    # never touches it.
     with _rotation_lock(state_dir) as acquired:
         if not acquired:
             return 0
-        # Another pane may have swapped while this one waited for the lock, and
-        # then the reading above describes an account we already left. Only
-        # that case is worth re-reading for: otherwise the live reading taken
-        # above is the better of the two.
-        swapped_to, its_limits, _ = claude.inspect_reading(paths, now)
-        if swapped_to != active:
-            active, limits, decision_limits = swapped_to, its_limits, its_limits
+        active = claude.active_account(paths)
+        limits = _latest_reading(paths, active)
+        if limits is None:
+            return 0
         enrolled = accounts.load(paths, config.accounts)
-        decision = core.decide(decision_limits, active, enrolled, now, config.thresholds)
-        # Only a decision to move pays for the settings.json read, so the common
-        # path is unchanged. rotate refuses this too, but a raised error suits
-        # the person who just pressed a key, not every turn end of every pane.
+        decision = core.decide(limits, active, enrolled, now, config.thresholds)
+        # rotate refuses this too, but a raised error suits the person who just
+        # pressed a key, not every message of every pane.
         if isinstance(decision, tuple):
             override = claude.settings_auth_override(paths.config_dir)
             if override:
                 decision = ("override", override)
-        line = act_on(decision, runtime, active, limits, enrolled, now)
+        try:
+            line = act_on(decision, runtime, active, limits, enrolled, now)
+        except RuntimeError as refusal:
+            # A busy Claude lock. The next message brings the next try.
+            line = "not rotating: %s" % refusal
+            decision = "stay"
 
-    # Outside the lock. Two herdr calls per pane, capped at five seconds each,
-    # is far too long to hold the thing every other pane's hook is waiting on,
-    # and a tag is worth none of that.
+    # Two herdr calls per pane, capped at five seconds each, is far too long to
+    # hold the lock every other pane is waiting on.
     if _moved(decision, config.dry_run):
         tag_all(_name_of(enrolled, decision[1]))
-
     if line:
-        print(line)
+        _log(state_dir, now, line)
     return 0
 
 
-def _worth_asking(limits, below, age_seconds):
-    """Plenty of fresh headroom needs no second opinion, and a restricted
-    account has nothing to learn. What is left is the band where a swap may be
-    due, a reading old enough to have drifted out of it unseen, and "unknown",
-    which is the stale cache that hid a spent window in the first place."""
-    if not below or limits == "locked":
-        return False
-    if limits == "unknown" or age_seconds > TRUST_CACHE_FOR_SECONDS:
-        return True
-    return any(entry.remaining < below for entry in limits)
+def _latest_reading(paths, active):
+    return next((entry.snapshot for entry in accounts.load(paths, []) if entry.id == active), None)
 
 
-def _age_seconds(fetched_at, now):
-    if fetched_at is None:
-        return 0
-    return (now.timestamp() * 1000 - fetched_at) / 1000
+def _previous_bar(state_dir, payload, spawn):
+    try:
+        with open(os.path.join(state_dir, PREVIOUS_STATUSLINE)) as handle:
+            command = (json.load(handle)["previous"] or {}).get("command")
+    except (OSError, ValueError, KeyError, AttributeError):
+        return ""
+    if not command:
+        return ""
+    try:
+        return spawn(
+            command, shell=True, input=payload, capture_output=True, text=True,
+            timeout=STATUSLINE_TIMEOUT_SECONDS,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
 
 
-def _estimate(state_dir, active, limits, fetched_at, now):
-    """What the cached reading is probably worth by now: its own figures, less
-    what the pace behind it implies has been spent since Claude took it.
+def _left_behind(limits, active, enrolled):
+    """A session keeps reporting the account it left until its next request.
+    That window's reset time is parked in the old account's snapshot, which is
+    how such a payload is told apart."""
+    resets = {
+        entry.resets_at.replace(microsecond=0)
+        for entry in limits
+        if entry.group == "session" and entry.resets_at
+    }
+    return any(
+        entry.id != active
+        and isinstance(entry.snapshot, list)
+        and any(
+            parked.group == "session"
+            and parked.resets_at
+            and parked.resets_at.replace(microsecond=0) in resets
+            for parked in entry.snapshot
+        )
+        for entry in enrolled
+    )
 
-    Only ever decides whether the reading is worth confirming. A rotation is
-    always taken on a reading, never on this.
-    """
-    rates = _record_reading(state_dir, active, limits, fetched_at, "reading")
-    if not isinstance(limits, list) or fetched_at is None:
-        return limits
-    age_hours = (now.timestamp() * 1000 - fetched_at) / core.MS_PER_HOUR
-    return core.corrected(limits, rates, age_hours)
 
-
-def _record_reading(state_dir, active, limits, fetched_at, filename):
-    """Keep the newest reading so the next turn end can tell the pace, and
-    return the pace since the one before it.
-
-    Kept per account: a rate measured across a swap would describe two windows
-    at once. Kept per source, in `filename`, so the cache keeps its own pace
-    while live answers come in newer than it. A reading Claude has not
-    refreshed is stored again as itself, so the pair either side of it still
-    spans the real interval.
-    """
-    path = os.path.join(state_dir, filename)
-    previous = None
+def _log(state_dir, now, line):
+    """One line per decision, not one per message it holds for."""
+    path = os.path.join(state_dir, LOG)
     try:
         with open(path) as handle:
-            stored = json.load(handle)
-        if stored["account"] == active:
-            previous = core.Reading(
-                fetched_at=stored["fetched_at"], remaining=stored["remaining"]
-            )
-    except (OSError, ValueError, KeyError, TypeError):
-        pass
-
-    if not isinstance(limits, list) or fetched_at is None:
-        return {}
-    current = core.Reading(
-        fetched_at=fetched_at, remaining={entry.group: entry.remaining for entry in limits}
-    )
-    if previous is None or current.fetched_at != previous.fetched_at:
-        atomic.write(path, json.dumps(
-            {"account": active, "fetched_at": fetched_at, "remaining": current.remaining}
-        ))
-    return core.burn_rate(previous, current)
-
-
-def _interval(paths, config, active, estimate, now):
-    """With an account able to take over, the call decides a swap and stays on
-    the short leash. With nowhere to go it decides nothing, so it is only worth
-    making when grazr cannot see the active account at all."""
-    if _somewhere_to_go(paths, config, active, now):
-        return LIVE_FETCH_INTERVAL_SECONDS
-    return BLIND_FETCH_INTERVAL_SECONDS if estimate == "unknown" else None
-
-
-def _somewhere_to_go(paths, config, active, now):
-    """Whether any enrolled account could take over. The live reading exists to
-    decide a rotation, so with nowhere to rotate to it decides nothing, and the
-    endpoint is undocumented and rate-limited enough to be worth not asking."""
-    enrolled = accounts.load(paths, config.accounts)
-    return core.next_account(active, enrolled, now, config.thresholds) is not None
-
-
-def _fetch_due(state_dir, interval):
-    """Several panes go idle at once and the endpoint rate-limits, so the
-    interval is shared through a file rather than kept per process. A None
-    interval means the call is not worth making at all."""
-    if interval is None:
-        return False
-    # Panes reaching a stale marker together would each read it as due. Only the
-    # check and the stamp need the lock: once stamped, the marker turns the
-    # others away on its own.
-    with _file_lock(os.path.join(state_dir, "usage_fetch.lock")) as held:
-        if not held:
-            return False
-        marker = os.path.join(state_dir, "last_usage_fetch")
-        try:
-            if time.time() - os.path.getmtime(marker) < interval:
-                return False
-        except OSError:
-            pass
-        # Stamped before the call, not after: a slow endpoint must not release
-        # every other pane to pile on behind it.
-        with open(marker, "a"):
-            os.utime(marker, None)
-        return True
+            last = handle.read().rstrip("\n").rsplit("\n", 1)[-1]
+    except OSError:
+        last = ""
+    if last.endswith(" " + line):
+        return
+    with open(path, "a") as handle:
+        handle.write("%s %s\n" % (now.astimezone().strftime("%Y-%m-%d %H:%M:%S"), line))
 
 
 def _rotation_lock(state_dir):
@@ -696,28 +607,25 @@ def main(argv):
 
 
 def _dispatch(argv):
+    entry_points = {
+        "statusline": statusline, "decide": decide, "install": install, "uninstall": uninstall,
+        "status": status, "enrol": enrol, "swap": swap, "tag": tag,
+    }
     command = argv[1] if len(argv) > 1 else ""
-    if command == "hook":
-        return hook()
-    if command == "status":
-        return status()
-    if command == "enrol":
-        return enrol()
-    if command == "swap":
-        return swap()
-    if command == "tag":
-        return tag()
-    print("usage: grazr.py hook|status|enrol|swap|tag", file=sys.stderr)
-    return 2
+    if command not in entry_points:
+        print("usage: grazr.py %s" % "|".join(entry_points), file=sys.stderr)
+        return 2
+    return entry_points[command]()
 
 
 def tag(runtime=None):
     """Name the account being spent. The pane event carries a pane id and tags
     that pane, so a new pane is not blank until the next rotation. The action
     carries none and tags every pane, which is what you press after adding the
-    sidebar row."""
-    paths = (runtime or _runtime()).paths
-    active, _, _ = claude.inspect_reading(paths, datetime.now(timezone.utc))
+    sidebar row. A pane start is also when to notice that the status line is no
+    longer grazr's, since without it grazr sees nothing."""
+    paths, _, state_dir, _ = runtime or _runtime()
+    active = claude.active_account(paths)
     if active is None:
         return 0
     named = next(
@@ -729,21 +637,52 @@ def tag(runtime=None):
         tag_pane(pane_id, named)
     else:
         tag_all(named)
+    if not claude.statusline_installed(paths.config_dir, _record_path(state_dir)):
+        line = "the status line is not grazr's, so grazr sees no usage; run the connect action"
+        if _announce_once(state_dir, "statusline-missing", "grazr: status line not connected", line):
+            print(line)
     return 0
+
+
+def install(runtime=None):
+    paths, _, state_dir, _ = runtime or _runtime()
+    print(claude.install_statusline(paths.config_dir, _record_path(state_dir), _shim_command(state_dir)))
+    return 0
+
+
+def uninstall(runtime=None):
+    paths, _, state_dir, _ = runtime or _runtime()
+    print(claude.uninstall_statusline(paths.config_dir, _record_path(state_dir)))
+    return 0
+
+
+def _record_path(state_dir):
+    return os.path.join(state_dir, PREVIOUS_STATUSLINE)
+
+
+def _shim_command(state_dir):
+    """The status line runs in Claude's environment, not herdr's, so the
+    command carries the directories herdr would have set."""
+    return "HERDR_PLUGIN_STATE_DIR=%s HERDR_PLUGIN_CONFIG_DIR=%s python3 %s statusline" % (
+        shlex.quote(state_dir),
+        shlex.quote(os.path.dirname(_config_path())),
+        shlex.quote(os.path.abspath(__file__)),
+    )
 
 
 def swap(runtime=None):
     """A swap the user asked for, from a Herdr key. The active account's
-    headroom is not consulted, and ENABLED gates the hook only."""
+    headroom is not consulted, and ENABLED gates the status line only."""
     runtime = runtime or _runtime()
     paths, store, state_dir, config = runtime
     now = datetime.now(timezone.utc)
     with _rotation_lock(state_dir) as acquired:
         if not acquired:
             return _refuse_swap("busy rotating already, try again in a moment")
-        active, limits, _ = claude.inspect_reading(paths, now)
+        active = claude.active_account(paths)
         if active is None:
             return _refuse_swap("not logged in, nothing to swap from")
+        limits = _latest_reading(paths, active)
         enrolled = accounts.load(paths, config.accounts)
         next_id = core.next_account(active, enrolled, now, config.thresholds)
         if next_id is None:
@@ -771,8 +710,7 @@ def _refuse_swap(reason):
 
 def status(runtime=None):
     paths, store, state_dir, config = runtime or _runtime()
-    now = datetime.now(timezone.utc)
-    active, limits, _ = claude.inspect_reading(paths, now)
+    active = claude.active_account(paths)
 
     print("config: %s" % _config_path())
     print("thresholds: session %d%% / weekly %d%% remaining%s\n"
@@ -789,9 +727,9 @@ def status(runtime=None):
         if not any(account.name == name for account in enrolled):
             print("  %-16s not enrolled, so it is never used" % name)
 
-    print("\nactive account headroom: %s" % _describe(limits))
-    if limits == "unknown":
-        print("  (usage describes another account or is over an hour old)")
+    print("\nactive account headroom: %s" % _describe(_latest_reading(paths, active)))
+    if not claude.statusline_installed(paths.config_dir, _record_path(state_dir)):
+        print("  the status line is not grazr's, so grazr sees no usage; run the connect action")
     if active and not any(account.id == active for account in enrolled):
         # Enrolled but left out of ACCOUNTS is the likelier mistake, and calling
         # that "not enrolled" sends you off to enrol it a second time.
@@ -808,17 +746,16 @@ def status(runtime=None):
 
 
 def _last_decision(state_dir):
-    notice = _read_notice(state_dir)
-    if notice.key is None:
+    notices = _read_notices(state_dir)
+    if not notices:
         return None
-    return "%s%s" % (notice.key, "" if notice.notified else "  (toast never appeared)")
+    key, notified = list(notices.items())[-1]
+    return "%s%s" % (key, "" if notified else "  (toast never appeared)")
 
 
 def _describe(snapshot):
     if snapshot is None:
-        return "never parked"
-    if snapshot in ("locked", "unknown"):
-        return snapshot
+        return "no reading yet"
     return ", ".join(
         "%s %d%% left" % (entry.kind, entry.remaining) for entry in snapshot
     ) or "no limits reported"
@@ -836,9 +773,10 @@ def enrol(runtime=None):
         print("closed, nothing changed")
         return 0
 
-    paths, store, _, _ = runtime or _runtime()
+    runtime = runtime or _runtime()
+    paths = runtime.paths
     if choice == "s":
-        return _enrol_from(paths, store, None)
+        return _enrol_from(runtime, None)
 
     source = os.path.abspath(
         os.path.join(paths.accounts_dir, "..", "enrol-%d" % os.getpid())
@@ -859,13 +797,14 @@ def enrol(runtime=None):
         if login.returncode != 0:
             print("login did not complete")
             return 1
-        return _enrol_from(paths, store, source)
+        return _enrol_from(runtime, source)
     finally:
-        if not claude.discard_isolated_login(store, source):
+        if not claude.discard_isolated_login(runtime.store, source):
             print("warning: could not remove the throwaway login from the keychain")
 
 
-def _enrol_from(paths, store, source):
+def _enrol_from(runtime, source):
+    paths, store, state_dir, _ = runtime
     name = input("account name: ").strip()
     if not name:
         print("a name is required")
@@ -877,6 +816,7 @@ def _enrol_from(paths, store, source):
         return 1
     print("\nenrolled %s as %s" % (name, identifier))
     print('add it to ACCOUNTS in %s' % _config_path())
+    print(claude.install_statusline(paths.config_dir, _record_path(state_dir), _shim_command(state_dir)))
     return 0
 
 

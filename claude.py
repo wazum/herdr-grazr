@@ -3,15 +3,12 @@ import json
 import os
 import shutil
 import time
-import urllib.request
 from collections import namedtuple
+from datetime import datetime, timezone
 
 import accounts
 import atomic
 import core
-
-# Claude treats its cached usage as stale past this age (OZr in the 2.1.260 binary).
-USAGE_STALE_AFTER_MS = 3_600_000
 
 # proper-lockfile options Claude uses for .oauth_refresh.lock in the same binary.
 OAUTH_LOCK_STALE_MS = 60_000
@@ -42,12 +39,6 @@ ACCOUNT_SCOPED_CONFIG_KEYS = (
     "additionalModelCostsCache",
     "additionalModelOptionsCache",
 )
-
-# What Claude's own fetchUtilization calls, with the headers and the 5s budget
-# it uses. The body it gets back is what it caches verbatim as `utilization`.
-USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
-USAGE_BETA = "oauth-2025-04-20"
-USAGE_TIMEOUT_SECONDS = 5
 
 
 @contextlib.contextmanager
@@ -105,115 +96,44 @@ def _oauth_refresh_lock(config_dir):
     )
 
 
-def read_limits(config, now):
-    """Claude's cached usage, or "unknown" when it cannot be trusted: it may
-    describe an account we already left, or predate the last refresh."""
-    if now.tzinfo is None:
-        raise ValueError("now must be timezone-aware or the freshness guard fails open")
-    usage = config.get("cachedUsageUtilization")
-    if not isinstance(usage, dict):
-        return "unknown"
-    active = (config.get("oauthAccount") or {}).get("accountUuid")
-    if not active or usage.get("accountUuid") != active:
-        return "unknown"
-
-    fetched_at = usage.get("fetchedAtMs")
-    if not isinstance(fetched_at, (int, float)) or isinstance(fetched_at, bool):
-        return "unknown"
-    if now.timestamp() * 1000 - fetched_at > USAGE_STALE_AFTER_MS:
-        return "unknown"
-    return read_utilization(usage.get("utilization"))
-
-
-def read_utilization(utilization):
-    """The body Claude fetches and then caches verbatim, so the same reading
-    serves whether it came off disk or off the wire."""
-    if not isinstance(utilization, dict):
-        return "unknown"
-    if _is_locked(utilization):
-        return "locked"
-
-    entries = utilization.get("limits")
-    if not isinstance(entries, list) or not entries:
-        return "unknown"
-    try:
-        return [
-            core.Limit(
-                kind=entry["kind"],
-                scope=entry.get("scope"),
-                group=entry["group"],
-                remaining=100 - entry["percent"],
-                resets_at=accounts.parse_time(entry.get("resets_at")),
-            )
-            for entry in entries
-        ]
-    except (AttributeError, KeyError, TypeError, ValueError):
-        return "unknown"
-
-
-def fetch_limits(store, opener=urllib.request.urlopen):
-    """Ask the endpoint Claude asks, because its cache can sit unrefreshed for
-    over an hour while a window is spent, and a reading that old is no reading
-    at all. Returns None for "could not tell", which leaves the caller on
-    whatever the cache said rather than stopping a turn end over it.
-
-    Read-only: grazr spends the access token it already parks and never
-    refreshes it. A 401 means Claude will refresh on its own next request.
-    """
-    blob = store.read_live()
-    if blob is None:
-        return None
-    try:
-        token = json.loads(blob)["claudeAiOauth"]["accessToken"]
-    except (KeyError, TypeError, ValueError):
-        return None
-
-    request = urllib.request.Request(
-        USAGE_URL,
-        headers={
-            "Authorization": "Bearer %s" % token,
-            "anthropic-beta": USAGE_BETA,
-            "Content-Type": "application/json",
-        },
-    )
-    try:
-        with opener(request, timeout=USAGE_TIMEOUT_SECONDS) as response:
-            payload = json.load(response)
-    except (OSError, ValueError):
-        # No network, an expired token, a rate limit, a body that is not JSON.
-        return None
-    reading = read_utilization(payload)
-    return None if reading == "unknown" else reading
-
-
-def _is_locked(utilization):
-    """A restriction the server placed on the account. The values are not
-    documented, so any non-null one is read as "leave this account alone"."""
-    return any(
-        isinstance(bucket, dict) and bucket.get("locked_reason")
-        for bucket in utilization.values()
-    )
-
-
 Paths = namedtuple("Paths", "config_path config_dir accounts_dir")
 
 
-def inspect_reading(paths, now):
-    """Who Claude is logged in as, what that account has left, and the
-    millisecond stamp Claude wrote on the reading. Only the burn correction
-    needs the stamp, and measuring against it rather than the wall clock is
-    what keeps a rate honest."""
+STATUSLINE_WINDOWS = (("five_hour", "session", "session"), ("seven_day", "weekly_all", "weekly"))
+
+
+def statusline_limits(payload):
+    """The limits Claude hands its status-line command after every message, for
+    the token the session is using. None when the payload has none."""
+    try:
+        windows = json.loads(payload)["rate_limits"]
+        return [
+            core.Limit(
+                kind=kind,
+                scope=None,
+                group=group,
+                remaining=max(0, 100 - windows[window]["used_percentage"]),
+                resets_at=_from_unix(windows[window].get("resets_at")),
+            )
+            for window, kind, group in STATUSLINE_WINDOWS
+            if window in windows
+        ]
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
+
+
+def _from_unix(seconds):
+    if not isinstance(seconds, (int, float)) or isinstance(seconds, bool):
+        return None
+    return datetime.fromtimestamp(seconds, timezone.utc)
+
+
+def active_account(paths):
     try:
         with open(paths.config_path) as handle:
-            config = json.load(handle)
-    except (OSError, ValueError):
-        # Not logged in, or read while Claude was rewriting the file.
-        return None, "unknown", None
-    active = (config.get("oauthAccount") or {}).get("accountUuid")
-    fetched_at = (config.get("cachedUsageUtilization") or {}).get("fetchedAtMs")
-    if not isinstance(fetched_at, (int, float)) or isinstance(fetched_at, bool):
-        fetched_at = None
-    return active, read_limits(config, now), fetched_at
+            return (json.load(handle).get("oauthAccount") or {}).get("accountUuid") or None
+    except (OSError, ValueError, AttributeError):
+        return None
 
 
 def enrol(paths, store, name, source_config_dir=None):
@@ -272,8 +192,8 @@ def discard_isolated_login(store, config_dir):
 def rotate(paths, store, active_id, next_id, snapshot):
     """Park the live credential under the account leaving, install the one
     arriving, and move the identity with it. Every refusal happens before the
-    first write; a failure part-way leaves identity and credential disagreeing,
-    which reads as "unknown" and stops every hook rather than swapping wrongly."""
+    first write, and a failure part-way is resumed by the next attempt rather
+    than parked over."""
     override = settings_auth_override(paths.config_dir)
     if override:
         raise RuntimeError(
@@ -367,6 +287,80 @@ def settings_auth_override(config_dir):
             if str(env.get(key) or "").strip():
                 return "env.%s" % key
     return None
+
+
+def install_statusline(config_dir, record_path, command):
+    """Put grazr's shim in as Claude's status line and keep what was there.
+
+    The record keeps the exact shim too, so a plugin checked out under a new
+    path re-installs instead of passing as connected, and a status line the
+    user replaced by hand is recognised as theirs.
+    """
+    settings = _read_settings(config_dir)
+    current = settings.get("statusLine")
+    recorded = _read_record(record_path)
+    if isinstance(current, dict) and current.get("command") == command:
+        return "status line already connected"
+    ours_before = recorded and isinstance(current, dict) and current.get("command") == recorded["shim"]
+    previous = recorded["previous"] if ours_before else current
+    atomic.write(record_path, json.dumps({"previous": previous, "shim": command}))
+    settings["statusLine"] = {
+        "type": "command",
+        "command": command,
+        "refreshInterval": (previous or {}).get("refreshInterval", 60),
+    }
+    _write_settings(config_dir, settings)
+    return "status line connected"
+
+
+def uninstall_statusline(config_dir, record_path):
+    recorded = _read_record(record_path)
+    if recorded is None:
+        return "status line was not connected"
+    settings = _read_settings(config_dir)
+    if (settings.get("statusLine") or {}).get("command") != recorded["shim"]:
+        return "status line was not grazr's, left alone"
+    if recorded["previous"]:
+        settings["statusLine"] = recorded["previous"]
+    else:
+        del settings["statusLine"]
+    _write_settings(config_dir, settings)
+    os.remove(record_path)
+    return "status line disconnected"
+
+
+def statusline_installed(config_dir, record_path):
+    recorded = _read_record(record_path)
+    if recorded is None:
+        return False
+    try:
+        return (_read_settings(config_dir).get("statusLine") or {}).get("command") == recorded["shim"]
+    except RuntimeError:
+        return False
+
+
+def _read_record(record_path):
+    try:
+        with open(record_path) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+
+def _read_settings(config_dir):
+    try:
+        with open(os.path.join(config_dir, "settings.json")) as handle:
+            settings = json.load(handle)
+    except OSError:
+        return {}
+    except ValueError:
+        raise RuntimeError("%s is not valid JSON, not touching it" % os.path.join(config_dir, "settings.json"))
+    return settings if isinstance(settings, dict) else {}
+
+
+def _write_settings(config_dir, settings):
+    os.makedirs(config_dir, exist_ok=True)
+    atomic.write(os.path.join(config_dir, "settings.json"), json.dumps(settings, indent=2) + "\n")
 
 
 def _carry_shared_keys(arriving, leaving):

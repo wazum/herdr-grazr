@@ -6,10 +6,6 @@ description = "Automatically switches Claude Code to another of your accounts be
 platforms = ["macos", "linux"]
 
 [[events]]
-on = "pane.agent_status_changed"
-command = ["python3", "grazr.py", "hook"]
-
-[[events]]
 on = "pane.agent_detected"
 command = ["python3", "grazr.py", "tag"]
 
@@ -19,6 +15,20 @@ title = "grazr: swap to the next account now"
 description = "Move to the first account in ACCOUNTS with headroom, without waiting for the threshold"
 contexts = ["global", "workspace"]
 command = ["python3", "grazr.py", "swap"]
+
+[[actions]]
+id = "install"
+title = "grazr: connect to Claude's status line"
+description = "Put grazr into Claude's status line, keeping the one you have, so it sees every message's usage"
+contexts = ["global", "workspace"]
+command = ["python3", "grazr.py", "install"]
+
+[[actions]]
+id = "uninstall"
+title = "grazr: disconnect from Claude's status line"
+description = "Put the status line back the way it was; grazr then sees no usage"
+contexts = ["global", "workspace"]
+command = ["python3", "grazr.py", "uninstall"]
 
 [[actions]]
 id = "tag"

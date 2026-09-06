@@ -98,12 +98,14 @@ jobs:
           assert manifest["platforms"] == ["macos", "linux"], manifest["platforms"]
           # Sorted, because Herdr reads these by id and the order they are
           # declared in carries no meaning.
-          assert sorted(event["on"] for event in manifest["events"]) == [
-              "pane.agent_detected",
-              "pane.agent_status_changed",
-          ]
+          assert sorted(event["on"] for event in manifest["events"]) == ["pane.agent_detected"]
           assert sorted(pane["id"] for pane in manifest["panes"]) == ["enrol", "status"]
-          assert sorted(action["id"] for action in manifest["actions"]) == ["swap", "tag"]
+          assert sorted(action["id"] for action in manifest["actions"]) == [
+              "install",
+              "swap",
+              "tag",
+              "uninstall",
+          ]
 
           # Every command must name a file that is actually in the repo.
           import os

@@ -19,7 +19,7 @@ import atomic
 import claude
 import grazr
 import stores
-from core import Account, Limit, Reading, burn_rate, corrected, decide, next_account
+from core import Account, Limit, decide, next_account
 
 NOW = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
 LATER = datetime(2026, 9, 4, 17, 0, tzinfo=timezone.utc)
@@ -31,17 +31,6 @@ THRESHOLDS = {"session": 15, "weekly": 20}
 def clock(when):
     """How grazr names a reset time to a person: local weekday and time."""
     return when.astimezone().strftime("%a %H:%M")
-
-
-def frozen_clock(start):
-    class Clock:
-        current = start
-
-        @classmethod
-        def now(cls, tz=None):
-            return cls.current
-
-    return Clock
 
 
 def limit(group="session", remaining=50, kind=None, scope=None, resets_at=LATER):
@@ -96,12 +85,6 @@ def spent_account():
 
 
 class DecideTest(unittest.TestCase):
-    def test_unknown_limits_stay(self):
-        self.assertEqual(
-            decide("unknown", active="work", accounts=[], now=NOW, thresholds=THRESHOLDS),
-            "stay",
-        )
-
     def test_every_limit_above_its_threshold_stays(self):
         limits = [limit(group="session", remaining=40), limit(group="weekly", remaining=60)]
 
@@ -173,71 +156,6 @@ class DecideTest(unittest.TestCase):
         )
 
 
-class BurnRateTest(unittest.TestCase):
-    """Two cached readings, taken at times Claude stamped, give the pace the
-    active account is spending at."""
-
-    def reading(self, hours, **remaining):
-        return Reading(fetched_at=hours * 3_600_000, remaining=remaining)
-
-    def test_it_reads_headroom_lost_per_hour(self):
-        rate = burn_rate(self.reading(0, session=80), self.reading(1, session=50))
-
-        self.assertEqual(rate, {"session": 30.0})
-
-    def test_a_window_that_reopened_is_not_a_negative_burn(self):
-        """A 5-hour window rolling over takes headroom from 5% back to 100%.
-        Read as a rate that is a huge refill, and the correction below would
-        credit headroom nobody has."""
-        rate = burn_rate(self.reading(0, session=5), self.reading(1, session=100))
-
-        self.assertEqual(rate, {})
-
-    def test_two_looks_at_the_same_reading_tell_nothing(self):
-        """The common case: Claude has not refreshed between two turn ends, so
-        both stamps match and there is no interval to divide by."""
-        rate = burn_rate(self.reading(1, session=50), self.reading(1, session=50))
-
-        self.assertEqual(rate, {})
-
-
-class CorrectedTest(unittest.TestCase):
-    """Claude's cached reading can be an hour old. Knowing its age and the pace
-    it was spending at says roughly where the window really is now."""
-
-    def test_it_takes_off_what_the_pace_implies_was_spent(self):
-        limits = [limit(group="session", remaining=57)]
-
-        reading = corrected(limits, {"session": 49.0}, age_hours=1.0)
-
-        self.assertEqual(reading[0].remaining, 8.0)
-
-    def test_headroom_never_reads_below_empty(self):
-        """A long-stale reading times a heavy pace overshoots, and a negative
-        headroom would sort below a spent account."""
-        limits = [limit(group="session", remaining=10)]
-
-        reading = corrected(limits, {"session": 50.0}, age_hours=2.0)
-
-        self.assertEqual(reading[0].remaining, 0)
-
-    def test_a_group_with_no_rate_is_left_as_it_was(self):
-        limits = [limit(group="weekly", remaining=40)]
-
-        reading = corrected(limits, {"session": 50.0}, age_hours=1.0)
-
-        self.assertEqual(reading[0].remaining, 40)
-
-    def test_a_fresh_reading_is_its_own_answer(self):
-        """The saving that pays for all this: nothing to correct means nothing
-        to ask the endpoint about."""
-        limits = [limit(group="session", remaining=57)]
-
-        reading = corrected(limits, {"session": 49.0}, age_hours=0.0)
-
-        self.assertEqual(reading, limits)
-
-
 class NextAccountTest(unittest.TestCase):
     """The candidate rule on its own, for a swap the user asks for: the active
     account's headroom is not a question, only who is fit to take over."""
@@ -251,32 +169,10 @@ class NextAccountTest(unittest.TestCase):
         )
 
     def test_nobody_fit_is_none(self):
-        accounts = [account("work"), spent_account(), account("locked", snapshot="locked")]
+        accounts = [account("work"), spent_account()]
 
         self.assertIsNone(
             next_account(active="work", accounts=accounts, now=NOW, thresholds=THRESHOLDS)
-        )
-
-
-class LockedAccountTest(unittest.TestCase):
-    """Rotating away from a restricted account is how you circumvent a
-    suspension, which the Usage Policy prohibits. grazr stops instead."""
-
-    def test_a_locked_active_account_never_rotates_even_with_somewhere_to_go(self):
-        accounts = [account("work"), account("personal")]
-
-        self.assertEqual(
-            decide("locked", active="work", accounts=accounts, now=NOW, thresholds=THRESHOLDS),
-            "locked",
-        )
-
-    def test_an_account_parked_while_locked_is_not_a_target(self):
-        limits = [limit(group="session", remaining=1)]
-        accounts = [account("work"), account("suspended", snapshot="locked"), account("fresh")]
-
-        self.assertEqual(
-            decide(limits, active="work", accounts=accounts, now=NOW, thresholds=THRESHOLDS),
-            ("rotate", "fresh"),
         )
 
 
@@ -795,231 +691,6 @@ class SecurityRunnerTest(unittest.TestCase):
         self.assertNotIn("87" * 40, str(raised.exception))
 
 
-def config_json(percent=20, fetched_at=None, account_uuid="uuid-work", limits=None, buckets=None):
-    if limits is None:
-        limits = [
-            {
-                "kind": "session",
-                "group": "session",
-                "percent": percent,
-                "resets_at": "2026-09-04T17:00:00.000000+00:00",
-                "scope": None,
-            }
-        ]
-    utilization = {"limits": limits}
-    utilization.update(buckets or {})
-    return {
-        "oauthAccount": {"accountUuid": "uuid-work"},
-        "cachedUsageUtilization": {
-            "accountUuid": account_uuid,
-            "fetchedAtMs": int((fetched_at or NOW).timestamp() * 1000),
-            "utilization": utilization,
-        },
-    }
-
-
-class ReadLimitsTest(unittest.TestCase):
-    def test_percent_used_becomes_remaining_headroom(self):
-        limits = claude.read_limits(config_json(percent=80), now=NOW)
-
-        self.assertEqual(len(limits), 1)
-        self.assertEqual(limits[0].group, "session")
-        self.assertEqual(limits[0].remaining, 20)
-        self.assertEqual(limits[0].resets_at, LATER)
-
-    def test_usage_describing_another_account_is_unknown(self):
-        stale_identity = config_json(account_uuid="uuid-someone-else")
-
-        self.assertEqual(claude.read_limits(stale_identity, now=NOW), "unknown")
-
-    def test_usage_with_no_identity_at_all_is_unknown(self):
-        """A half-written config has neither uuid, and None == None must not
-        read as a match -- that guard is the whole defence against a mid-swap read."""
-        anonymous = config_json()
-        del anonymous["oauthAccount"]
-        del anonymous["cachedUsageUtilization"]["accountUuid"]
-
-        self.assertEqual(claude.read_limits(anonymous, now=NOW), "unknown")
-
-    def test_usage_older_than_an_hour_is_unknown(self):
-        long_ago = datetime(2026, 9, 4, 10, 30, tzinfo=timezone.utc)
-
-        self.assertEqual(claude.read_limits(config_json(fetched_at=long_ago), now=NOW), "unknown")
-
-    def test_a_z_suffixed_reset_time_parses(self):
-        """Python 3.9's fromisoformat rejects a bare Z."""
-        zulu = config_json(
-            limits=[
-                {
-                    "kind": "session",
-                    "group": "session",
-                    "percent": 10,
-                    "resets_at": "2026-09-04T17:00:00.000000Z",
-                    "scope": None,
-                }
-            ]
-        )
-
-        self.assertEqual(claude.read_limits(zulu, now=NOW)[0].resets_at, LATER)
-
-    def test_a_naive_now_is_refused_rather_than_silently_misjudged(self):
-        """A naive datetime is read as local time, which can make hours-old usage
-        look fresh. The freshness guard must never fail open."""
-        with self.assertRaises(ValueError):
-            claude.read_limits(config_json(), now=datetime(2026, 9, 4, 12, 0))
-
-    def test_a_locked_bucket_reports_locked_rather_than_a_low_reading(self):
-        """locked_reason is server-set and its values are not documented, so any
-        non-null one is read as "do not touch this account"."""
-        restricted = config_json(
-            percent=10,
-            buckets={"five_hour": {"utilization": 10, "resets_at": None, "locked_reason": "suspended"}},
-        )
-
-        self.assertEqual(claude.read_limits(restricted, now=NOW), "locked")
-
-    def test_an_unlocked_bucket_reads_normally(self):
-        healthy = config_json(
-            buckets={
-                "five_hour": {"utilization": 10, "resets_at": None, "locked_reason": None},
-                "seven_day_opus": None,
-            }
-        )
-
-        self.assertNotEqual(claude.read_limits(healthy, now=NOW), "locked")
-
-    def test_unexpected_types_anywhere_in_the_usage_block_are_unknown(self):
-        """This runs on every turn end of every pane, so an unfamiliar shape has
-        to degrade rather than raise."""
-        cases = {
-            "fetchedAtMs is a string": {"fetchedAtMs": "soon"},
-            "fetchedAtMs is null": {"fetchedAtMs": None},
-            "utilization is a string": {"utilization": "nope"},
-            "utilization is a list": {"utilization": []},
-            "limits is a string": {"utilization": {"limits": "nope"}},
-            "a limit entry is a string": {"utilization": {"limits": ["nope"]}},
-        }
-        for label, override in cases.items():
-            with self.subTest(label=label):
-                config = config_json()
-                config["cachedUsageUtilization"].update(override)
-                self.assertEqual(claude.read_limits(config, now=NOW), "unknown")
-
-    def test_a_reset_time_without_a_timezone_is_still_comparable(self):
-        """Claude sends +00:00 today, so this is defensive rather than observed."""
-        naive = config_json(
-            limits=[
-                {
-                    "kind": "session",
-                    "group": "session",
-                    "percent": 90,
-                    "resets_at": "2026-09-04T17:00:00.000000",
-                    "scope": None,
-                }
-            ]
-        )
-
-        limits = claude.read_limits(naive, now=NOW)
-
-        self.assertEqual(limits[0].resets_at, LATER)
-        self.assertEqual(
-            decide(
-                limits, active="work", accounts=[spent_account()], now=NOW, thresholds=THRESHOLDS
-            ),
-            "exhausted",
-        )
-
-    def test_an_unrecognised_limit_shape_is_unknown_not_a_crash(self):
-        """The hook runs on every idle event, so a Claude release that renames a
-        field must degrade to "stay", not raise on every pane."""
-        renamed = config_json(limits=[{"kind": "session", "pct": 90, "scope": None}])
-
-        self.assertEqual(claude.read_limits(renamed, now=NOW), "unknown")
-
-    def test_missing_or_empty_limits_are_unknown(self):
-        for config in (config_json(limits=[]), {}, {"cachedUsageUtilization": None}):
-            with self.subTest(config=config):
-                self.assertEqual(claude.read_limits(config, now=NOW), "unknown")
-
-
-class FetchLimitsTest(unittest.TestCase):
-    """Claude's cached usage can sit unrefreshed for over an hour while a
-    window is spent, so grazr asks the same endpoint Claude asks, using the
-    credential it already parks."""
-
-    TOKEN = json.dumps({"claudeAiOauth": {"accessToken": "tok-123"}})
-
-    def opener(self, payload, recorded=None):
-        def fake_open(request, timeout=None):
-            if recorded is not None:
-                recorded["url"] = request.full_url
-                recorded["headers"] = {k.lower(): v for k, v in request.headers.items()}
-                recorded["timeout"] = timeout
-            return io.BytesIO(json.dumps(payload).encode())
-
-        return fake_open
-
-    def test_it_asks_the_usage_endpoint_and_parses_what_comes_back(self):
-        recorded = {}
-        payload = {
-            "limits": [
-                {"kind": "session", "group": "session", "percent": 92, "resets_at": None}
-            ]
-        }
-
-        limits = claude.fetch_limits(
-            FakeStore(live=self.TOKEN), opener=self.opener(payload, recorded)
-        )
-
-        self.assertEqual([entry.remaining for entry in limits], [8])
-        self.assertEqual(recorded["url"], claude.USAGE_URL)
-        self.assertEqual(recorded["headers"]["authorization"], "Bearer tok-123")
-        self.assertEqual(recorded["headers"]["anthropic-beta"], claude.USAGE_BETA)
-        self.assertEqual(recorded["timeout"], claude.USAGE_TIMEOUT_SECONDS)
-
-    def test_the_token_never_travels_in_the_url(self):
-        recorded = {}
-
-        claude.fetch_limits(
-            FakeStore(live=self.TOKEN), opener=self.opener({"limits": []}, recorded)
-        )
-
-        self.assertNotIn("tok-123", recorded["url"])
-
-    def test_a_restriction_is_reported_the_same_as_from_the_cache(self):
-        payload = {"five_hour": {"locked_reason": "spend_cap"}, "limits": []}
-
-        limits = claude.fetch_limits(FakeStore(live=self.TOKEN), opener=self.opener(payload))
-
-        self.assertEqual(limits, "locked")
-
-    def test_anything_going_wrong_is_no_answer_rather_than_a_broken_hook(self):
-        """Runs on a turn end. No network, an expired token, a shape that
-        changed: every one of them means carry on with what the cache said."""
-        cases = {
-            "network": lambda request, timeout=None: (_ for _ in ()).throw(OSError("down")),
-            "not json": lambda request, timeout=None: io.BytesIO(b"<html>"),
-            "percent is a string": self.opener(
-                {"limits": [{"kind": "session", "group": "session", "percent": "92"}]}
-            ),
-            "resets_at is a number": self.opener(
-                {"limits": [{"kind": "session", "group": "session", "percent": 9, "resets_at": 5}]}
-            ),
-            "a field is missing": self.opener({"limits": [{"kind": "session", "percent": 9}]}),
-            "a limit is null": self.opener({"limits": [None]}),
-        }
-        for name, opener in cases.items():
-            with self.subTest(case=name):
-                self.assertIsNone(claude.fetch_limits(FakeStore(live=self.TOKEN), opener=opener))
-
-    def test_no_credential_and_no_token_both_mean_no_answer(self):
-        for blob in (None, "{}", "not json at all"):
-            with self.subTest(blob=blob):
-                self.assertIsNone(
-                    claude.fetch_limits(FakeStore(live=blob), opener=self.opener({}))
-                )
-
-
 class CredentialReadTest(unittest.TestCase):
     def read(self, spawn):
         return stores.KeychainStore("svc", "acct", spawn=spawn).read_live()
@@ -1316,7 +987,7 @@ class RotateTest(unittest.TestCase):
         with open(os.path.join(self.accounts_dir, identifier + ".json")) as handle:
             return json.load(handle)
 
-    def run_rotate(self, snapshot="locked"):
+    def run_rotate(self, snapshot=None):
         claude.rotate(self.paths, self.store, "uuid-work", "uuid-personal", snapshot)
 
     def test_it_parks_the_live_blob_before_installing_the_next(self):
@@ -1371,7 +1042,7 @@ class RotateTest(unittest.TestCase):
                 )
 
                 note = claude.rotate(
-                    self.paths, self.store, "uuid-work", "uuid-personal", "locked"
+                    self.paths, self.store, "uuid-work", "uuid-personal", None
                 )
 
                 self.assertEqual(bool(note and "expired" in note), expected)
@@ -1442,11 +1113,8 @@ class RotateTest(unittest.TestCase):
 
         self.assertEqual(set(os.listdir(self.accounts_dir)), before)
 
-    def test_a_swap_completes_on_a_reading_it_could_not_trust(self):
-        """A swap leaves the reading untrusted for a while, and the manual swap
-        hands whatever it read straight through. One that has already moved the
-        credential must not die recording it."""
-        self.run_rotate(snapshot="unknown")
+    def test_a_swap_completes_with_no_reading_to_record(self):
+        self.run_rotate(snapshot=None)
 
         self.assertEqual(self.store.live, "PARKED-PERSONAL")
         self.assertIsNone(self.read_account("uuid-work")["snapshot"])
@@ -1538,24 +1206,18 @@ class SnapshotRoundTripTest(unittest.TestCase):
             with self.subTest(garbage=garbage):
                 self.assertIsNone(accounts.snapshot_from_json(garbage))
 
-    def test_locked_survives_a_round_trip(self):
-        self.assertEqual(accounts.snapshot_from_json(accounts.snapshot_to_json("locked")), "locked")
-
     def test_never_parked_survives_a_round_trip(self):
         self.assertIsNone(accounts.snapshot_from_json(accounts.snapshot_to_json(None)))
 
 
-class InspectTest(unittest.TestCase):
+class AccountLoadTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.directory, True)
         self.accounts_dir = os.path.join(self.directory, "accounts")
         os.mkdir(self.accounts_dir)
-        self.config_path = os.path.join(self.directory, ".claude.json")
-        with open(self.config_path, "w") as handle:
-            json.dump(config_json(percent=80), handle)
         self.paths = claude.Paths(
-            config_path=self.config_path,
+            config_path=os.path.join(self.directory, ".claude.json"),
             config_dir=self.directory,
             accounts_dir=self.accounts_dir,
         )
@@ -1564,44 +1226,14 @@ class InspectTest(unittest.TestCase):
         with open(os.path.join(self.accounts_dir, identifier + ".json"), "w") as handle:
             json.dump(data, handle)
 
-    def test_it_reports_the_stamp_claude_put_on_the_reading(self):
-        """The burn correction measures against Claude's own stamps, never the
-        wall clock, so the age of the reading has to come back with it."""
-        _, _, fetched_at = claude.inspect_reading(self.paths, now=NOW)
-
-        self.assertEqual(fetched_at, int(NOW.timestamp() * 1000))
-
-    def test_an_unreadable_config_has_no_stamp_to_report(self):
-        os.unlink(self.config_path)
-
-        self.assertEqual(claude.inspect_reading(self.paths, now=NOW), (None, "unknown", None))
-
-    def test_it_reports_the_active_account_and_its_headroom(self):
-        active, limits, _ = claude.inspect_reading(self.paths, now=NOW)
-
-        self.assertEqual(active, "uuid-work")
-        self.assertEqual(limits[0].remaining, 20)
-
-    def test_an_unreadable_config_is_unknown_not_a_traceback(self):
-        """Not logged in, or caught mid-write. This runs on every status change
-        of every pane, so it must degrade rather than raise."""
-        with open(self.config_path, "w") as handle:
-            handle.write('{"oauthAccount": {"accountUu')
-
-        self.assertEqual(claude.inspect_reading(self.paths, now=NOW), (None, "unknown", None))
-
-        os.unlink(self.config_path)
-        self.assertEqual(claude.inspect_reading(self.paths, now=NOW), (None, "unknown", None))
-
     def test_accounts_come_back_in_the_configured_preference_order(self):
         self.write_account("uuid-work", {"name": "work"})
-        self.write_account("uuid-personal", {"name": "personal", "snapshot": "locked"})
+        self.write_account("uuid-personal", {"name": "personal"})
 
         enrolled = accounts.load(self.paths, ["personal", "work"])
 
         self.assertEqual([account.name for account in enrolled], ["personal", "work"])
         self.assertEqual(enrolled[0].id, "uuid-personal")
-        self.assertEqual(enrolled[0].snapshot, "locked")
 
     def test_one_corrupt_account_file_does_not_hide_the_others(self):
         """The store is read whole on the rotate path, so a single bad file
@@ -1946,36 +1578,6 @@ class ThresholdDefaultTest(unittest.TestCase):
         self.assertEqual(config.thresholds["session"], 30)
 
 
-class TurnBoundaryTest(unittest.TestCase):
-    """`done` is the same idle state in a tab nobody has looked at, so both are
-    turn ends. Anything else, any other agent, or a malformed envelope: exit."""
-
-    def test_it_acts_on_a_finished_claude_turn(self):
-        for status in ("idle", "done"):
-            with self.subTest(status=status):
-                event = json.dumps({"data": {"agent": "claude", "agent_status": status}})
-                self.assertTrue(grazr.is_turn_end(event))
-
-    def test_it_ignores_anything_that_is_not_a_finished_claude_turn(self):
-        ignored = [
-            {"data": {"agent": "claude", "agent_status": "working"}},
-            {"data": {"agent": "claude", "agent_status": "blocked"}},
-            {"data": {"agent": "claude", "agent_status": "unknown"}},
-            {"data": {"agent": "codex", "agent_status": "idle"}},
-            {"data": {"agent_status": "idle"}},
-            {"data": {}},
-            {},
-        ]
-        for event in ignored:
-            with self.subTest(event=event):
-                self.assertFalse(grazr.is_turn_end(json.dumps(event)))
-
-    def test_a_malformed_envelope_is_ignored_rather_than_raising(self):
-        for event in ("", "not json", "null", "[]"):
-            with self.subTest(event=event):
-                self.assertFalse(grazr.is_turn_end(event))
-
-
 class PathResolutionTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.mkdtemp()
@@ -2139,30 +1741,6 @@ class AtomicWriteTest(unittest.TestCase):
         self.assertEqual(os.listdir(self.directory), ["shared"])
 
 
-class ReadingRecordTest(unittest.TestCase):
-    """The pace comes from two readings of the same account's window."""
-
-    def setUp(self):
-        self.directory = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self.directory, True)
-
-    def record(self, account, remaining, fetched_at):
-        limits = [limit(group="session", remaining=remaining)]
-        return grazr._record_reading(self.directory, account, limits, fetched_at, "reading")
-
-    def test_it_reports_the_pace_between_two_readings(self):
-        self.record("uuid-work", 90, 0)
-
-        self.assertEqual(self.record("uuid-work", 50, 3_600_000), {"session": 40.0})
-
-    def test_the_pace_is_not_measured_across_a_swap(self):
-        """Two accounts spend two different windows, so a rate that spans the
-        change from one to the other describes neither."""
-        self.record("uuid-work", 90, 0)
-
-        self.assertEqual(self.record("uuid-personal", 50, 3_600_000), {})
-
-
 class NotifyTest(unittest.TestCase):
     """`herdr notification show` exits 0 even when it shows nothing: toasts are
     off by default, a toast already on screen returns busy, and there is a rate
@@ -2246,8 +1824,7 @@ class ActOnDecisionTest(unittest.TestCase):
             store=self.store,
             state_dir=self.state_dir,
             config=grazr.Config(
-                thresholds=THRESHOLDS, accounts=[], enabled=True,
-                dry_run=dry_run, live_usage_below=0,
+                thresholds=THRESHOLDS, accounts=[], enabled=True, dry_run=dry_run,
             ),
         )
 
@@ -2310,12 +1887,6 @@ class ActOnDecisionTest(unittest.TestCase):
         self.assertNotIn("spent", line)
         self.assertEqual(self.rotations, [])
 
-    def test_a_locked_account_is_reported_and_never_rotated_away_from(self):
-        self.act("locked")
-
-        self.assertEqual(self.rotations, [])
-        self.assertEqual(len(self.notices), 1)
-
     def test_exhaustion_is_announced_once_not_on_every_idle_pane(self):
         limits = [limit(group="session", remaining=0)]
         for _ in range(4):
@@ -2370,6 +1941,25 @@ class ActOnDecisionTest(unittest.TestCase):
         self.assertTrue(again, "the situation is new again after a rotation")
         self.assertEqual(len(self.notices), 3)
 
+    def test_two_open_situations_are_each_announced_once(self):
+        """One slot for the last situation let two of them evict each other,
+        and a pane got both toasts again on every message."""
+        limits = [limit(group="session", remaining=0)]
+
+        for _ in range(3):
+            self.act("unenrolled")
+            self.act("exhausted", limits=limits)
+
+        self.assertEqual(len(self.notices), 2)
+
+    def test_a_situation_another_pane_is_announcing_is_left_to_it(self):
+        """Two panes reach the same new situation in the same second and read
+        the store before either has written."""
+        with grazr._file_lock(os.path.join(self.state_dir, "notices.lock")):
+            line = self.act("unenrolled")
+
+        self.assertEqual((line, self.notices), (None, []))
+
     def test_the_reset_it_names_covers_every_account_not_just_the_active_one(self):
         """When nothing has headroom, the useful answer is when the first
         account becomes usable, which may not be the one you are on."""
@@ -2408,7 +1998,7 @@ class ActOnDecisionTest(unittest.TestCase):
         self.assertNotIn("+00:00", line, "a person reads a clock, not an ISO timestamp")
 
     def test_exhaustion_without_usable_limits_still_reports(self):
-        for limits in ("unknown", "locked", [], [limit(resets_at=None)]):
+        for limits in (None, [], [limit(resets_at=None)]):
             with self.subTest(limits=limits):
                 self.state_dir = tempfile.mkdtemp(dir=self.directory)
                 self.assertIn("earliest reset", self.act("exhausted", limits=limits) or "")
@@ -2431,9 +2021,7 @@ class EnrolledPairFixture(unittest.TestCase):
         self.claude_dir = os.path.join(self.directory, "claude")
         for made in (self.state_dir, self.claude_dir, os.path.join(self.state_dir, "accounts")):
             os.makedirs(made)
-        # hook() reads the real clock. A fixed timestamp here goes stale and
-        # quietly stops testing rotation at all.
-        self.write_usage(percent=99)
+        self.write_login()
         for identifier, name in (("uuid-work", "work"), ("uuid-personal", "personal")):
             with open(os.path.join(self.state_dir, "accounts", identifier + ".json"), "w") as f:
                 json.dump({"name": name, "oauthAccount": {"accountUuid": identifier}}, f)
@@ -2453,7 +2041,7 @@ class EnrolledPairFixture(unittest.TestCase):
         with open(os.path.join(self.state_dir, "config.env"), "w") as handle:
             handle.write(text)
 
-    def write_account_snapshot(self, identifier, remaining):
+    def write_account_snapshot(self, identifier, remaining, resets_at=None):
         """Park a reading on an account so it counts as spent. The reset is in
         the future, or a lapsed window would read as headroom again."""
         path = os.path.join(self.state_dir, "accounts", identifier + ".json")
@@ -2462,29 +2050,14 @@ class EnrolledPairFixture(unittest.TestCase):
         stored["snapshot"] = [{
             "kind": "session", "scope": None, "group": "session",
             "remaining": remaining,
-            "resets_at": (datetime.now(timezone.utc) + timedelta(hours=3)).isoformat(),
+            "resets_at": (resets_at or datetime.now(timezone.utc) + timedelta(hours=3)).isoformat(),
         }]
         with open(path, "w") as handle:
             json.dump(stored, handle)
 
-    def write_usage(self, percent):
-        wall_now = datetime.now(timezone.utc)
+    def write_login(self, account_uuid="uuid-work"):
         with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
-            json.dump(
-                config_json(
-                    fetched_at=wall_now,
-                    limits=[
-                        {
-                            "kind": "session",
-                            "group": "session",
-                            "percent": percent,
-                            "resets_at": (wall_now + timedelta(hours=5)).isoformat(),
-                            "scope": None,
-                        }
-                    ],
-                ),
-                handle,
-            )
+            json.dump({"oauthAccount": {"accountUuid": account_uuid}}, handle)
 
     def invoke(self, entry, **environment):
         """Run an entry point against the fixture, recording rotations instead
@@ -2519,29 +2092,7 @@ class EnrolledPairFixture(unittest.TestCase):
         )
 
 
-class HookTest(EnrolledPairFixture):
-    """The hook is what Herdr actually runs, and it carries the concurrency
-    argument: several panes go idle together and must produce one rotation."""
-
-    def run_hook(self, status="idle"):
-        event = json.dumps({"data": {"agent": "claude", "agent_status": status}})
-        code, _ = self.invoke(grazr.hook, HERDR_PLUGIN_EVENT_JSON=event)
-        return code
-
-    def write_stale_usage(self, percent):
-        """What Claude leaves behind when it has not refreshed in over an hour,
-        which is the state that let a window run dry unnoticed."""
-        long_ago = datetime.now(timezone.utc) - timedelta(hours=2)
-        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
-            json.dump(
-                config_json(
-                    fetched_at=long_ago,
-                    limits=[{"kind": "session", "group": "session", "percent": percent,
-                             "resets_at": None, "scope": None}],
-                ),
-                handle,
-            )
-
+class TagTest(EnrolledPairFixture):
     def test_without_a_pane_of_its_own_it_tags_every_pane(self):
         """A Herdr action carries no pane id. That is the one you press after
         adding the sidebar row, when every open pane is still blank."""
@@ -2555,347 +2106,6 @@ class HookTest(EnrolledPairFixture):
 
         self.assertEqual(self.tags, [("w9:p1", "work")])
 
-    def test_an_auth_setting_is_reported_once_not_on_every_turn_end(self):
-        """A settings.json auth key is a standing situation, like a restricted
-        account, rather than news each time a pane goes idle."""
-        with open(os.path.join(self.claude_dir, "settings.json"), "w") as handle:
-            json.dump({"env": {"ANTHROPIC_API_KEY": "sk-ant-x"}}, handle)
-        event = json.dumps({"data": {"agent": "claude", "agent_status": "idle"}})
-
-        _, first = self.invoke(grazr.hook, HERDR_PLUGIN_EVENT_JSON=event)
-        _, again = self.invoke(grazr.hook, HERDR_PLUGIN_EVENT_JSON=event)
-
-        self.assertIn("ANTHROPIC_API_KEY", first)
-        self.assertEqual(again, "", "the second turn end has nothing new to say")
-        self.assertEqual(self.rotations, [], "a swap under an auth key moves nothing")
-        self.assertEqual(len(self.notices), 1)
-
-    def write_usage_at(self, percent, minutes_ago):
-        """A reading Claude stamped in the past, which is the state the cache
-        spends most of its life in."""
-        stamped = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
-        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
-            json.dump(
-                config_json(
-                    fetched_at=stamped,
-                    limits=[{"kind": "session", "group": "session", "percent": percent,
-                             "resets_at": None, "scope": None}],
-                ),
-                handle,
-            )
-
-    def test_a_reading_the_pace_says_has_run_down_is_worth_asking_about(self):
-        """A reading that sits above the mark on its face, while its age and the
-        pace behind it put the real figure under. Raw, grazr never asks."""
-        self.write_config('ACCOUNTS="work personal"\nLIVE_USAGE_BELOW=25\n')
-        self.write_usage_at(percent=10, minutes_ago=55)  # 90% left
-        self.run_hook()
-        os.utime(os.path.join(self.state_dir, "last_usage_fetch"),
-                 (time.time() - 61, time.time() - 61))
-        self.write_usage_at(percent=50, minutes_ago=25)  # 50% left half an hour on
-        asked = []
-
-        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
-            self.run_hook()
-
-        # 40 points went in that half hour, and the reading is 25 minutes old,
-        # so the 50% on screen is really nearer 17 and worth confirming.
-        self.assertEqual(asked, [1], "a stale reading above the mark still earns one call")
-
-    def test_an_endpoint_that_does_not_answer_is_reported(self):
-        """A silent fallback lets a window run out while grazr looks busy."""
-        self.write_usage(percent=60)  # 40% left: worth confirming, not yet a swap
-
-        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: None):
-            code, printed = self.invoke(
-                grazr.hook,
-                HERDR_PLUGIN_EVENT_JSON=json.dumps(
-                    {"data": {"agent": "claude", "agent_status": "idle"}}
-                ),
-            )
-
-        self.assertEqual(code, 0)
-        self.assertIn("cached reading", printed)
-
-    def test_a_reading_that_says_rotate_is_confirmed_sooner(self):
-        """Five minutes of drift is a lot of window at a heavy pace."""
-        self.write_usage(percent=99)
-        asked = []
-
-        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
-            self.run_hook()
-            os.utime(os.path.join(self.state_dir, "last_usage_fetch"),
-                     (time.time() - 90, time.time() - 90))
-            self.run_hook()
-
-        self.assertEqual(len(asked), 2, "90 seconds is long enough when a swap is due")
-
-    def test_a_reading_in_the_watch_band_uses_the_urgent_interval(self):
-        self.write_usage(percent=60)  # 40% left: under the mark, above the line
-        asked = []
-
-        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
-            self.run_hook()
-            os.utime(os.path.join(self.state_dir, "last_usage_fetch"),
-                     (time.time() - 90, time.time() - 90))
-            self.run_hook()
-
-        self.assertEqual(len(asked), 2)
-
-    def test_the_panes_are_tagged_after_the_lock_is_let_go(self):
-        """Holding the rotation lock through the tagging stalls every other
-        pane's hook, and a tag is worth none of it."""
-        self.write_usage(percent=99)
-
-        self.run_hook()
-
-        self.assertEqual(self.tags, ["personal"])
-        self.assertEqual(self.lock_free_while_tagging, [True])
-
-    def test_a_reading_it_cannot_trust_is_asked_about_even_with_nowhere_to_go(self):
-        """Claude stops writing its usage cache while `oauthAccount` and the
-        token a running session holds name different accounts, which is the
-        state a swap leaves behind. Silence there means grazr can neither warn
-        nor learn the pace."""
-        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
-            json.dump(config_json(account_uuid="uuid-someone-else"), handle)
-        self.write_account_snapshot("uuid-personal", remaining=1)
-        asked = []
-
-        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
-            self.run_hook()
-
-        self.assertEqual(asked, [1], "a reading it cannot see is worth one look")
-
-    def test_an_unknown_reading_is_confirmed_again_after_the_urgent_interval(self):
-        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
-            json.dump(config_json(account_uuid="uuid-someone-else"), handle)
-        asked = []
-        live = [Limit("session", None, "session", 40, None)]
-
-        with mock.patch.object(
-            claude, "fetch_limits", lambda store, **kw: asked.append(1) or live
-        ):
-            self.run_hook()
-            os.utime(os.path.join(self.state_dir, "last_usage_fetch"),
-                     (time.time() - 61, time.time() - 61))
-            self.run_hook()
-
-        self.assertEqual(len(asked), 2)
-
-    def test_live_pace_rotates_before_the_next_reading_crosses_the_threshold(self):
-        """The swap is made on the forecast, but what it records is what was
-        actually seen."""
-        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
-            json.dump(config_json(account_uuid="uuid-someone-else"), handle)
-        answers = iter([
-            [Limit("session", None, "session", 40, None)],
-            [Limit("session", None, "session", 31, None)],
-        ])
-        Clock = frozen_clock(datetime(2026, 9, 6, 7, 28, tzinfo=timezone.utc))
-
-        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: next(answers)), \
-             mock.patch.object(grazr, "datetime", Clock):
-            self.run_hook()
-            os.utime(os.path.join(self.state_dir, "last_usage_fetch"),
-                     (time.time() - 61, time.time() - 61))
-            Clock.current += timedelta(seconds=61)
-            self.run_hook()
-
-        self.assertEqual(
-            (len(self.rotations), self.rotations[0][4][0].remaining), (1, 31)
-        )
-
-    def test_an_older_disk_reading_does_not_replace_live_history(self):
-        Clock = frozen_clock(datetime(2026, 9, 6, 7, 28, tzinfo=timezone.utc))
-
-        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
-            json.dump(config_json(percent=60, fetched_at=Clock.current - timedelta(minutes=10)),
-                      handle)
-        answers = iter([
-            [Limit("session", None, "session", 40, None)],
-            [Limit("session", None, "session", 31, None)],
-        ])
-
-        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: next(answers)), \
-             mock.patch.object(grazr, "datetime", Clock):
-            self.run_hook()
-            os.utime(os.path.join(self.state_dir, "last_usage_fetch"),
-                     (time.time() - 301, time.time() - 301))
-            Clock.current += timedelta(minutes=5)
-            self.run_hook()
-
-        self.assertEqual(len(self.rotations), 1)
-
-    def test_live_pace_only_looks_ahead_to_the_next_check(self):
-        Clock = frozen_clock(datetime(2026, 9, 6, 7, 28, tzinfo=timezone.utc))
-
-        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
-            json.dump(config_json(percent=60, fetched_at=Clock.current - timedelta(minutes=10)),
-                      handle)
-        answers = iter([
-            [Limit("session", None, "session", 40, None)],
-            [Limit("session", None, "session", 34, None)],
-        ])
-
-        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: next(answers)), \
-             mock.patch.object(grazr, "datetime", Clock):
-            self.run_hook()
-            os.utime(os.path.join(self.state_dir, "last_usage_fetch"),
-                     (time.time() - 301, time.time() - 301))
-            Clock.current += timedelta(minutes=5)
-            self.run_hook()
-
-        self.assertEqual(len(self.rotations), 0)
-
-    def test_a_blind_spell_is_not_asked_about_every_few_minutes(self):
-        """The desync runs for hours, and one call every ordinary interval
-        through that would be dozens for a swap grazr still cannot make."""
-        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
-            json.dump(config_json(account_uuid="uuid-someone-else"), handle)
-        self.write_account_snapshot("uuid-personal", remaining=1)
-        asked = []
-
-        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
-            self.run_hook()
-            os.utime(os.path.join(self.state_dir, "last_usage_fetch"),
-                     (time.time() - 600, time.time() - 600))
-            self.run_hook()
-
-        self.assertEqual(len(asked), 1, "ten minutes on is still too soon to look again")
-
-    def test_a_blind_spell_is_not_warned_about_on_a_half_hour_forecast(self):
-        """The long wait between two blind looks is not headroom already spent."""
-        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
-            json.dump(config_json(account_uuid="uuid-someone-else"), handle)
-        self.write_account_snapshot("uuid-work", remaining=1)
-        self.write_account_snapshot("uuid-personal", remaining=1)
-        answers = iter([
-            [Limit("session", None, "session", 60, None)],
-            [Limit("session", None, "session", 40, None)],
-        ])
-        Clock = frozen_clock(datetime(2026, 9, 6, 7, 28, tzinfo=timezone.utc))
-
-        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: next(answers)), \
-             mock.patch.object(grazr, "datetime", Clock):
-            self.run_hook()
-            os.utime(os.path.join(self.state_dir, "last_usage_fetch"),
-                     (time.time() - 1801, time.time() - 1801))
-            Clock.current += timedelta(minutes=30)
-            self.run_hook()
-
-        self.assertEqual((self.notices, self.rotations), ([], []))
-
-    def test_a_reading_above_the_mark_is_confirmed_once_it_is_minutes_old(self):
-        """Between two of Claude's cache refreshes a burst can spend a window
-        grazr never looked at."""
-        self.write_usage_at(percent=10, minutes_ago=6)
-        asked = []
-
-        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
-            self.run_hook()
-
-        self.assertEqual(asked, [1])
-
-    def test_a_reading_above_the_mark_is_trusted_while_fresh(self):
-        self.write_usage_at(percent=10, minutes_ago=2)
-        asked = []
-
-        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
-            self.run_hook()
-
-        self.assertEqual(asked, [])
-
-    def test_it_does_not_ask_the_endpoint_when_there_is_nowhere_to_go(self):
-        """The call is undocumented and rate-limited, and its whole purpose is
-        deciding a rotation. With no account able to take over, the answer
-        cannot change anything, so asking spends a request on nothing."""
-        os.unlink(os.path.join(self.state_dir, "accounts", "uuid-personal.json"))
-        self.write_usage(percent=99)
-        asked = []
-
-        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
-            self.run_hook()
-
-        self.assertEqual(asked, [], "nothing to rotate to, so nothing to ask about")
-
-    def test_a_reading_too_old_to_trust_is_replaced_by_a_live_one(self):
-        self.write_stale_usage(percent=20)
-        fresh = [Limit("session", None, "session", 2, None)]
-
-        with mock.patch.object(claude, "fetch_limits", lambda store, **kwargs: fresh):
-            self.run_hook()
-
-        self.assertEqual(len(self.rotations), 1, "the live reading is what decides")
-
-    def test_a_healthy_cached_reading_is_never_second_guessed(self):
-        """The call costs a round trip on a path that runs on every turn end of
-        every pane, so plenty of headroom must not reach for the network."""
-        self.write_usage(percent=10)
-        asked = []
-
-        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
-            self.run_hook()
-
-        self.assertEqual(asked, [])
-
-    def test_panes_going_idle_together_ask_once_not_once_each(self):
-        self.write_stale_usage(percent=20)
-        asked = []
-
-        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
-            for _ in range(4):
-                self.run_hook()
-
-        self.assertEqual(len(asked), 1)
-
-    def test_a_check_another_pane_is_already_making_is_not_repeated(self):
-        """Panes reaching a stale marker together cannot be told apart by the
-        marker alone."""
-        with grazr._file_lock(os.path.join(self.state_dir, "usage_fetch.lock")) as held:
-            self.assertTrue(held)
-            self.assertFalse(grazr._fetch_due(self.state_dir, 60))
-
-    def test_setting_the_watch_mark_to_zero_never_asks(self):
-        self.write_stale_usage(percent=99)
-        self.write_config('ACCOUNTS="work personal"\nLIVE_USAGE_BELOW=0\n')
-        asked = []
-
-        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
-            self.run_hook()
-
-        self.assertEqual(asked, [])
-
-    def test_a_spent_account_rotates(self):
-        self.assertEqual(self.run_hook(), 0)
-
-        self.assertEqual(len(self.rotations), 1)
-        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
-
-    def test_a_healthy_account_never_reads_the_account_files(self):
-        """This runs on every status change of every pane. Reading one JSON per
-        enrolled account to conclude "stay" is work nobody asked for."""
-        self.write_usage(percent=10)
-        reads = []
-
-        with mock.patch.object(
-            accounts, "load", lambda paths, names: reads.append(names) or []
-        ):
-            self.run_hook()
-
-        self.assertEqual(reads, [], "the common path must not touch the account store")
-
-    def test_a_pane_that_is_still_working_does_nothing(self):
-        self.run_hook(status="working")
-
-        self.assertEqual(self.rotations, [])
-
-    def test_disabling_the_plugin_stops_it_before_it_looks_at_anything(self):
-        self.write_config('ACCOUNTS="work personal"\nENABLED=0\n')
-
-        self.assertEqual(self.run_hook(), 0)
-        self.assertEqual(self.rotations, [])
-
     def test_taking_the_lock_does_not_truncate_the_file(self):
         """A pane that loses the race must not have written to it on the way."""
         marker = os.path.join(self.state_dir, "rotate.lock")
@@ -2907,33 +2117,6 @@ class HookTest(EnrolledPairFixture):
 
         with open(marker) as handle:
             self.assertEqual(handle.read(), "held by someone")
-
-    def test_a_pane_that_loses_the_race_does_not_rotate_as_well(self):
-        """Two panes idle at the same instant. The loser must stay, or it parks
-        over what the winner just wrote."""
-        held = open(os.path.join(self.state_dir, "rotate.lock"), "w")
-        self.addCleanup(held.close)
-        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-        self.assertEqual(self.run_hook(), 0)
-
-        self.assertEqual(self.rotations, [], "the pane that lost the lock must stay")
-
-    def test_the_decision_is_taken_again_once_the_lock_is_held(self):
-        """Whatever the first pane did is already done by the time this one gets
-        in, so the decision has to be made against the world as it is now."""
-        inspected = []
-        real_reading = claude.inspect_reading
-
-        def counting_reading(paths, now):
-            inspected.append(now)
-            return real_reading(paths, now)
-
-        # inspect delegates here, so this counts the read under the lock too.
-        with mock.patch.object(claude, "inspect_reading", counting_reading):
-            self.run_hook()
-
-        self.assertEqual(len(inspected), 2, "read once to decide, once under the lock")
 
 
 class SwapTest(EnrolledPairFixture):
@@ -2948,8 +2131,6 @@ class SwapTest(EnrolledPairFixture):
         self.assertEqual(self.lock_free_while_tagging, [True])
 
     def test_swaps_off_a_healthy_account(self):
-        self.write_usage(percent=10)
-
         code, printed = self.invoke(grazr.swap)
 
         self.assertEqual(code, 0)
@@ -3016,12 +2197,390 @@ class SwapTest(EnrolledPairFixture):
         self.assertIn("busy", printed)
 
 
+class StatuslineTest(EnrolledPairFixture):
+    """grazr sits in Claude's status line, so it sees every message's reading
+    and can move before the next one."""
+
+    def payload(self, used, resets_at=None):
+        return json.dumps({"rate_limits": {"five_hour": {
+            "used_percentage": used, "resets_at": resets_at,
+        }}})
+
+    def run_statusline(self, payload):
+        """The decision runs detached in real life; here it runs inline."""
+        return self.invoke(
+            lambda runtime: grazr.statusline(
+                runtime, payload, detach=lambda: grazr.decide(runtime)
+            )
+        )
+
+    def test_a_low_reading_rotates_before_the_next_message(self):
+        self.run_statusline(self.payload(used=75))
+
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
+
+    def test_the_swap_runs_detached_from_a_status_line_claude_may_cancel(self):
+        """Claude cancels a status-line command when the next update arrives,
+        and a swap half made is the one thing worth avoiding."""
+        started = []
+
+        with mock.patch.object(grazr.subprocess, "Popen", lambda *a, **k: started.append((a, k))):
+            self.invoke(lambda runtime: grazr.statusline(runtime, self.payload(used=75)))
+
+        (argv,), keywords = started[0]
+        self.assertEqual(argv[-1], "decide")
+        self.assertTrue(keywords["start_new_session"])
+        self.assertEqual(self.rotations, [])
+
+    def test_a_healthy_reading_is_recorded_and_nothing_else(self):
+        self.run_statusline(self.payload(used=10))
+
+        with open(os.path.join(self.state_dir, "accounts", "uuid-work.json")) as handle:
+            recorded = json.load(handle)["snapshot"]
+        self.assertEqual((self.rotations, recorded[0]["remaining"]), ([], 90))
+
+    def test_the_status_line_configured_before_is_shown_unchanged(self):
+        with open(os.path.join(self.state_dir, "statusline.previous.json"), "w") as handle:
+            json.dump({"previous": {"type": "command", "command": "printf 'inner bar'"},
+                       "shim": "python3 grazr.py statusline"}, handle)
+
+        _, printed = self.run_statusline(self.payload(used=10))
+
+        self.assertEqual(printed, "inner bar")
+
+    def test_without_a_previous_status_line_the_bar_stays_empty(self):
+        _, printed = self.run_statusline(self.payload(used=75))
+
+        self.assertEqual(printed, "")
+
+    def test_a_payload_from_the_account_just_left_is_ignored(self):
+        """A session makes its next request on the new account, but until then
+        its status line still reports the one it left, under that window's
+        reset time."""
+        left_window = datetime.now(timezone.utc) + timedelta(hours=3)
+        self.write_account_snapshot("uuid-personal", remaining=1, resets_at=left_window)
+
+        self.run_statusline(self.payload(used=99, resets_at=int(left_window.timestamp())))
+
+        with open(os.path.join(self.state_dir, "accounts", "uuid-work.json")) as handle:
+            self.assertEqual((self.rotations, json.load(handle).get("snapshot")), ([], None))
+
+    def test_enabled_off_leaves_the_account_alone(self):
+        self.write_config('ACCOUNTS="work personal"\nENABLED=0\n')
+
+        self.run_statusline(self.payload(used=75))
+
+        self.assertEqual(self.rotations, [])
+
+    def test_the_decision_goes_to_the_log_since_stdout_is_the_bar(self):
+        self.run_statusline(self.payload(used=75))
+
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            self.assertIn("rotated work -> personal", handle.read())
+
+    def test_the_panes_are_tagged_after_the_lock_is_let_go(self):
+        self.run_statusline(self.payload(used=75))
+
+        self.assertEqual((self.tags, self.lock_free_while_tagging), (["personal"], [True]))
+
+    def test_an_auth_setting_is_reported_once_not_on_every_message(self):
+        """A settings.json auth key is a standing situation, not news on every
+        message of every pane."""
+        with open(os.path.join(self.claude_dir, "settings.json"), "w") as handle:
+            json.dump({"env": {"ANTHROPIC_API_KEY": "sk-ant-x"}}, handle)
+
+        self.run_statusline(self.payload(used=75))
+        self.run_statusline(self.payload(used=75))
+
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            logged = handle.read()
+        self.assertEqual((logged.count("ANTHROPIC_API_KEY"), len(self.notices), self.rotations),
+                         (1, 1, []))
+
+    def test_a_payload_without_limits_is_reported_once(self):
+        """A Claude release that renames the field would otherwise leave grazr
+        blind in silence, until the next pane hits the wall."""
+        spoken = {"session_id": "s", "version": "9.9.9",
+                  "context_window": {"total_input_tokens": 512}}
+
+        self.run_statusline(json.dumps(spoken))
+        self.run_statusline(json.dumps(spoken))
+
+        self.assertEqual(len(self.notices), 1)
+        self.assertEqual(self.notices[0][0], "grazr: cannot read Claude's usage")
+        self.assertIn("9.9.9", self.notices[0][1])
+
+    def test_a_session_that_has_not_reached_the_api_yet_is_not_a_problem(self):
+        fresh = {"session_id": "s", "version": "9.9.9",
+                 "context_window": {"total_input_tokens": 0}}
+
+        self.run_statusline(json.dumps(fresh))
+
+        self.assertEqual(self.notices, [])
+
+    def test_a_repeated_decision_is_logged_once(self):
+        self.write_config('ACCOUNTS="work personal"\nDRY_RUN=1\n')
+
+        self.run_statusline(self.payload(used=75))
+        self.run_statusline(self.payload(used=75))
+
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            self.assertEqual(handle.read().count("would rotate"), 1)
+
+    def test_a_pane_that_loses_the_race_does_not_rotate_as_well(self):
+        """Two panes cross the line on the same message. The loser must stay, or
+        it parks over what the winner just wrote."""
+        held = open(os.path.join(self.state_dir, "rotate.lock"), "w")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        self.run_statusline(self.payload(used=75))
+
+        self.assertEqual(self.rotations, [])
+
+
+class ConnectTest(EnrolledPairFixture):
+    """Connecting grazr to Claude's status line, from the enrol pane or the
+    action, and noticing when it has come loose."""
+
+    def settings(self):
+        with open(os.path.join(self.claude_dir, "settings.json")) as handle:
+            return json.load(handle)
+
+    def test_install_bakes_grazrs_own_directories_into_the_command(self):
+        """The status line runs in Claude's environment, not herdr's, so the
+        command has to carry what herdr would have set."""
+        _, printed = self.invoke(grazr.install)
+
+        command = self.settings()["statusLine"]["command"]
+        self.assertIn("HERDR_PLUGIN_STATE_DIR=%s" % shlex.quote(self.state_dir), command)
+        self.assertTrue(command.endswith("grazr.py statusline"), command)
+        self.assertIn("connected", printed)
+
+    def test_uninstall_puts_the_settings_back(self):
+        self.invoke(grazr.install)
+
+        _, printed = self.invoke(grazr.uninstall)
+
+        self.assertEqual(("statusLine" in self.settings(), "disconnected" in printed), (False, True))
+
+    def test_a_pane_start_warns_once_while_the_status_line_is_not_grazrs(self):
+        self.invoke(grazr.tag)
+        self.invoke(grazr.tag)
+
+        self.assertEqual([title for title, _ in self.notices], ["grazr: status line not connected"])
+
+    def test_a_pane_start_is_quiet_once_connected(self):
+        self.invoke(grazr.install)
+
+        self.invoke(grazr.tag)
+
+        self.assertEqual(self.notices, [])
+
+    def test_enrolling_connects_the_status_line(self):
+        with mock.patch.object(claude, "enrol", lambda *arguments: "uuid-third"), \
+             mock.patch("builtins.input", lambda prompt: "third"):
+            _, printed = self.invoke(lambda runtime: grazr._enrol_from(runtime, None))
+
+        self.assertEqual(("statusLine" in self.settings(), "connected" in printed), (True, True))
+
+
+# Captured from Claude Code 2.1.261, trimmed to the fields around the limits.
+REAL_PAYLOAD = json.dumps({
+    "session_id": "e3aa5c38-bb78-4744-ae67-0a06b91eab0d",
+    "version": "2.1.261",
+    "model": {"id": "claude-fable-5-1", "display_name": "Fable 5.1"},
+    "context_window": {"context_window_size": 1000000, "used_percentage": 23},
+    "rate_limits": {
+        "five_hour": {"used_percentage": 27, "resets_at": 1788719400},
+        "seven_day": {"used_percentage": 48, "resets_at": 1788793200},
+    },
+})
+
+
+class StatuslinePayloadTest(unittest.TestCase):
+    """What Claude hands its status line after every message, read into the
+    limits grazr decides on."""
+
+    def payload(self, **rate_limits):
+        return json.dumps({"session_id": "s", "rate_limits": rate_limits})
+
+    def test_it_reads_the_payload_claude_really_sends(self):
+        limits = claude.statusline_limits(REAL_PAYLOAD)
+
+        self.assertEqual(
+            [(entry.group, entry.remaining, entry.resets_at.isoformat()) for entry in limits],
+            [("session", 73, "2026-09-06T18:30:00+00:00"),
+             ("weekly", 52, "2026-09-07T15:00:00+00:00")],
+        )
+
+    def test_used_percent_becomes_remaining_headroom_per_window(self):
+        limits = claude.statusline_limits(self.payload(
+            five_hour={"used_percentage": 71, "resets_at": int(LATER.timestamp())},
+            seven_day={"used_percentage": 46, "resets_at": int(SOONER.timestamp())},
+        ))
+
+        self.assertEqual(
+            [(entry.group, entry.remaining, entry.resets_at) for entry in limits],
+            [("session", 29, LATER), ("weekly", 54, SOONER)],
+        )
+
+    def test_usage_past_the_limit_reads_as_nothing_left_not_a_negative(self):
+        limits = claude.statusline_limits(
+            self.payload(five_hour={"used_percentage": 102, "resets_at": None})
+        )
+
+        self.assertEqual(limits[0].remaining, 0)
+
+    def test_a_window_claude_leaves_out_is_left_out(self):
+        limits = claude.statusline_limits(
+            self.payload(seven_day={"used_percentage": 10, "resets_at": None})
+        )
+
+        self.assertEqual([(entry.group, entry.resets_at) for entry in limits], [("weekly", None)])
+
+    def test_a_payload_without_limits_is_none(self):
+        self.assertIsNone(claude.statusline_limits(json.dumps({"session_id": "s"})))
+        self.assertIsNone(claude.statusline_limits("not json"))
+
+
+class StatuslineInstallTest(unittest.TestCase):
+    """grazr takes over Claude's status line and keeps what was there, so the
+    bar the user set up still shows and comes back on uninstall."""
+
+    def setUp(self):
+        self.directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.directory, True)
+        self.settings = os.path.join(self.directory, "settings.json")
+        self.record = os.path.join(self.directory, "statusline.previous.json")
+
+    def write_settings(self, settings):
+        with open(self.settings, "w") as handle:
+            json.dump(settings, handle)
+
+    def read_settings(self):
+        with open(self.settings) as handle:
+            return json.load(handle)
+
+    def test_it_takes_over_the_status_line_and_keeps_the_old_one(self):
+        old = {"type": "command", "command": "old-bar", "refreshInterval": 30}
+        self.write_settings({"theme": "dark", "statusLine": old})
+
+        line = claude.install_statusline(self.directory, self.record, "SHIM")
+
+        self.assertEqual(self.read_settings(), {
+            "theme": "dark",
+            "statusLine": {"type": "command", "command": "SHIM", "refreshInterval": 30},
+        })
+        with open(self.record) as handle:
+            self.assertEqual(json.load(handle), {"previous": old, "shim": "SHIM"})
+        self.assertEqual(line, "status line connected")
+
+    def test_a_setup_without_a_status_line_gets_one_that_refreshes_while_idle(self):
+        claude.install_statusline(self.directory, self.record, "SHIM")
+
+        self.assertEqual(
+            self.read_settings()["statusLine"],
+            {"type": "command", "command": "SHIM", "refreshInterval": 60},
+        )
+
+    def test_installing_again_keeps_the_original_previous(self):
+        self.write_settings({"statusLine": {"type": "command", "command": "old-bar"}})
+        claude.install_statusline(self.directory, self.record, "SHIM")
+
+        line = claude.install_statusline(self.directory, self.record, "SHIM-MOVED")
+
+        with open(self.record) as handle:
+            self.assertEqual(json.load(handle)["previous"]["command"], "old-bar")
+        self.assertEqual(
+            (self.read_settings()["statusLine"]["command"], line),
+            ("SHIM-MOVED", "status line connected"),
+        )
+
+    def test_installing_the_same_shim_twice_changes_nothing(self):
+        claude.install_statusline(self.directory, self.record, "SHIM")
+
+        self.assertEqual(
+            claude.install_statusline(self.directory, self.record, "SHIM"),
+            "status line already connected",
+        )
+
+    def test_uninstall_restores_what_was_there(self):
+        old = {"type": "command", "command": "old-bar"}
+        self.write_settings({"statusLine": old})
+        claude.install_statusline(self.directory, self.record, "SHIM")
+
+        line = claude.uninstall_statusline(self.directory, self.record)
+
+        self.assertEqual((self.read_settings()["statusLine"], line), (old, "status line disconnected"))
+        self.assertFalse(os.path.exists(self.record))
+
+    def test_uninstall_removes_an_entry_that_was_not_there_before(self):
+        self.write_settings({"theme": "dark"})
+        claude.install_statusline(self.directory, self.record, "SHIM")
+
+        claude.uninstall_statusline(self.directory, self.record)
+
+        self.assertEqual(self.read_settings(), {"theme": "dark"})
+
+    def test_uninstall_leaves_a_status_line_the_user_replaced_by_hand(self):
+        claude.install_statusline(self.directory, self.record, "SHIM")
+        self.write_settings({"statusLine": {"type": "command", "command": "mine"}})
+
+        line = claude.uninstall_statusline(self.directory, self.record)
+
+        self.assertEqual(
+            (self.read_settings()["statusLine"]["command"], line),
+            ("mine", "status line was not grazr's, left alone"),
+        )
+
+    def test_it_knows_whether_it_is_connected(self):
+        self.assertFalse(claude.statusline_installed(self.directory, self.record))
+        claude.install_statusline(self.directory, self.record, "SHIM")
+        self.assertTrue(claude.statusline_installed(self.directory, self.record))
+        self.write_settings({"statusLine": {"type": "command", "command": "mine"}})
+        self.assertFalse(claude.statusline_installed(self.directory, self.record))
+
+    def test_a_settings_file_that_is_not_json_is_not_touched(self):
+        with open(self.settings, "w") as handle:
+            handle.write("{ not json")
+
+        with self.assertRaises(RuntimeError):
+            claude.install_statusline(self.directory, self.record, "SHIM")
+
+        with open(self.settings) as handle:
+            self.assertEqual(handle.read(), "{ not json")
+
+
+class ActiveAccountTest(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.directory, True)
+        self.paths = claude.Paths(
+            config_path=os.path.join(self.directory, ".claude.json"),
+            config_dir=self.directory,
+            accounts_dir=self.directory,
+        )
+
+    def test_it_is_the_login_named_in_claudes_config(self):
+        with open(self.paths.config_path, "w") as handle:
+            json.dump({"oauthAccount": {"accountUuid": "uuid-work"}}, handle)
+
+        self.assertEqual(claude.active_account(self.paths), "uuid-work")
+
+    def test_no_config_or_no_login_is_none(self):
+        self.assertIsNone(claude.active_account(self.paths))
+        with open(self.paths.config_path, "w") as handle:
+            handle.write("{}")
+        self.assertIsNone(claude.active_account(self.paths))
+
+
 class InjectedRuntimeTest(unittest.TestCase):
     """An entry point runs on what it is handed. Built from the environment
     instead, the store and the paths cannot be replaced without patching, and a
     test that misses one reaches the real keychain."""
 
-    def test_the_hook_runs_on_the_runtime_it_is_given(self):
+    def test_the_status_line_runs_on_the_runtime_it_is_given(self):
         directory = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, directory, True)
         state_dir = os.path.join(directory, "state")
@@ -3031,18 +2590,8 @@ class InjectedRuntimeTest(unittest.TestCase):
         for identifier, name in (("uuid-work", "work"), ("uuid-personal", "personal")):
             with open(os.path.join(state_dir, "accounts", identifier + ".json"), "w") as handle:
                 json.dump({"name": name, "oauthAccount": {"accountUuid": identifier}}, handle)
-        wall_now = datetime.now(timezone.utc)
         with open(os.path.join(claude_dir, ".claude.json"), "w") as handle:
-            json.dump(
-                config_json(
-                    fetched_at=wall_now,
-                    limits=[{
-                        "kind": "session", "group": "session", "percent": 99, "scope": None,
-                        "resets_at": (wall_now + timedelta(hours=5)).isoformat(),
-                    }],
-                ),
-                handle,
-            )
+            json.dump({"oauthAccount": {"accountUuid": "uuid-work"}}, handle)
 
         store = FakeStore(live="LIVE-WORK", parked={"uuid-personal": "PARKED-PERSONAL"})
         runtime = grazr.Runtime(
@@ -3058,16 +2607,16 @@ class InjectedRuntimeTest(unittest.TestCase):
                 accounts=["work", "personal"],
                 enabled=True,
                 dry_run=False,
-                live_usage_below=0,
             ),
         )
-        event = json.dumps({"data": {"agent": "claude", "agent_status": "idle"}})
+        payload = json.dumps({"rate_limits": {"five_hour": {"used_percentage": 99}}})
 
         # Nothing in the environment points at any of it.
-        with mock.patch.dict(os.environ, {"HERDR_PLUGIN_EVENT_JSON": event}, clear=True), \
+        with mock.patch.dict(os.environ, {}, clear=True), \
                 mock.patch.object(grazr, "notify", lambda title, body: True), \
-                mock.patch.object(grazr, "tag_all", lambda name: None):
-            grazr.hook(runtime)
+                mock.patch.object(grazr, "tag_all", lambda name: None), \
+                contextlib.redirect_stdout(io.StringIO()):
+            grazr.statusline(runtime, payload, detach=lambda: grazr.decide(runtime))
 
         self.assertEqual(store.live, "PARKED-PERSONAL", "it swapped inside the given runtime")
 

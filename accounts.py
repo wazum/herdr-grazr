@@ -90,11 +90,7 @@ def record_snapshot(paths, identifier, snapshot):
 
 
 def snapshot_to_json(snapshot):
-    if snapshot == "locked":
-        return snapshot
     if not isinstance(snapshot, list):
-        # A restriction is worth recording. Not knowing is not, so "unknown"
-        # stores as never parked.
         return None
     return [
         {
@@ -111,8 +107,8 @@ def snapshot_to_json(snapshot):
 def snapshot_from_json(stored):
     """Anything unrecognised reads as never parked. A hand-edited account file
     must not take rotation out for every account."""
-    if stored is None or stored == "locked":
-        return stored
+    if stored is None:
+        return None
     try:
         return [
             core.Limit(

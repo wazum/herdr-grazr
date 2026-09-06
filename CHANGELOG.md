@@ -14,49 +14,40 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the README has the row to add. A pane you have scrolled up in is skipped,
   because repainting a pane's metadata can jump it to the bottom.
 
-- Fewer calls to the undocumented usage endpoint. *grazr* never asks when no
-  other account could take over, and it weighs the age Claude stamped on a
-  reading against the pace the last two imply, so a stale-looking number earns
-  a call while a fresh one above the mark does not. The estimate only decides
-  when to ask.
+- *grazr* now reads usage from Claude's status line. After every message Claude
+  hands its status-line command the session's five-hour and weekly usage, and
+  *grazr* sits in that command: it shows your own status line unchanged and
+  keeps the reading. A swap follows within one message, mid-turn, in a process
+  detached from the status line so Claude cancelling that for the next update
+  cannot leave a swap half done. Enrolling connects the status line; two
+  actions connect and disconnect it by hand, and a pane start warns once when
+  it has been replaced. Before this, *grazr* read Claude's cached usage at turn
+  ends, and that cache could sit unrefreshed while a window drained, which is
+  how panes still hit the wall.
 
-- *grazr* saves each live answer and measures the pace between two. While
-  another account could take over, it checks again after one minute at most,
-  and it switches early when that pace says the window would cross a threshold
-  before the next check. A cached reading above the mark is taken at its word
-  for five minutes, then confirmed: Claude refreshes that cache on its own
-  schedule, and a burst across several panes can spend a window between two
-  refreshes. A lock keeps two panes from making the same check at once.
+- Every decision is written to `grazr.log` in the state directory with a
+  timestamp, since the status line's own output is the bar.
 
 ### Changed
 
-- `REMAINING_SESSION` now defaults to 30 and `LIVE_USAGE_BELOW` to 45. Claude's
-  cached reading runs behind the window it describes, and 15 left no room for
-  that lag plus the wait for the next check. The gap between the two marks is
-  the band *grazr* watches in, so `LIVE_USAGE_BELOW` sits above the thresholds.
-  Both are still yours to set.
+- `REMAINING_SESSION` now defaults to 30. It is still yours to set.
+
+### Removed
+
+- `LIVE_USAGE_BELOW` and the call to the undocumented usage endpoint. The
+  status line makes both unnecessary. A `config.env` that still has the
+  setting is refused with a line naming it.
+- The refusal to rotate away from a restricted account. The restriction came
+  from the endpoint, which is gone, and Claude shows the restriction itself.
 
 ### Fixed
 
-- The two files *grazr* shares between panes are put in place in one step. A
-  plain write empties a file before it fills it, and both are written on the
-  common path of every turn end with no lock held.
+- The files *grazr* shares between panes are put in place in one step. A
+  plain write empties a file before it fills it, and they are written on every
+  message with no lock held.
 - The panes are tagged after the rotation lock is let go rather than while it
   is held. Two Herdr calls per pane, capped at five seconds each, is long
-  enough to stall every other pane's hook, and a tag is worth none of that.
-- A swap no longer dies recording the account it just left when the reading
-  was one *grazr* could not trust. A swap leaves Claude's cache naming the
-  account you came from, so the manual swap was most likely to hit this on the
-  second one in a row, after the credential had already moved.
-- A reading *grazr* cannot trust is now asked about even when no account could
-  take over. Claude stops writing its usage cache while `~/.claude.json` and a
-  running session name different accounts, which is the state a swap leaves
-  behind for a while, and staying silent through it meant *grazr* could neither
-  warn nor measure the pace. It asks rarely there, since the call buys those
-  two things rather than a swap.
-- An endpoint that does not answer is reported instead of passing in silence.
-  Falling back to Claude's cached reading is right, but doing it quietly let a
-  window run out while *grazr* looked like it was working.
+  enough to stall every other pane's swap, and a tag is worth none of that.
 - The keychain is reached at `/usr/bin/security` rather than by name, so a
   `security` planted earlier on `PATH` is never handed a credential.
 - When no account is above your thresholds, *grazr* says they are low rather

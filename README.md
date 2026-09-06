@@ -20,8 +20,8 @@
 A Claude pane goes dead when the 5-hour or weekly limit hits. Getting it back
 means logging in as another account by hand. *grazr* does not wait for the wall.
 When a window is nearly spent, it swaps which stored credential the official
-`claude` binary reads. It does that between turns, so no pane is ever blocked
-or prompted.
+`claude` binary reads. It sees the usage Claude reports after every message
+and swaps within one, mid-turn, so no pane is ever blocked or prompted.
 
 **You do nothing.** There is no command to run and no prompt to answer. A pane
 mid-task keeps going on the fresh account, and a pane you were not watching
@@ -41,14 +41,22 @@ above carry the rest.
 ## How it works
 
 <img width="880" src="docs/how-grazr-works.svg"
-     alt="Flowchart of grazr's response when a Claude pane finishes a turn: it reads Claude's cached usage, stays put unless that usage is both trustworthy and nearly spent, and otherwise swaps the stored credential to a fresh account, which Claude picks up within its thirty-second cache.">
+     alt="Flowchart of grazr's response to each Claude message: it reads the usage Claude hands its status line, stays put while the account has room, and otherwise swaps the stored credential to a fresh account, which Claude picks up on its next request.">
 
 You log in to each account once, with Claude's own `claude auth login`. *grazr*
 never sees a password and never mints a token. It copies the credential that a
 normal login already produced into a parked copy of its own, then copies it
 back when that account's turn comes. The `claude` binary is unmodified, and it
-re-reads its credential every 30 seconds. That is what makes the swap
+re-reads its credential on its next request. That is what makes the swap
 invisible.
+
+*grazr* learns how much is left from Claude itself. After every message Claude
+hands its status-line command the session's five-hour and weekly usage. *grazr*
+sits in that command. It passes the payload on to the status line you had,
+shows that line unchanged, and keeps the reading. When a threshold is crossed,
+a separate process makes the swap. Claude cancels the status-line command when
+the next update arrives, and a swap must never be caught half done by that.
+*grazr* polls nothing and calls no endpoint of its own.
 
 *grazr* keeps parked credentials where Claude keeps the live one. On macOS that
 is the keychain, and no secret ever touches the disk. On Linux there is no
@@ -73,6 +81,12 @@ Pick `s` for the account you are logged into now. Pick `l` for each extra one.
 logged out. One keypress, no Return. `q` or `Esc` closes the pane without
 changing anything.
 
+Enrolling also connects *grazr* to Claude's status line and keeps the one you
+have. If you later change `statusLine` in `~/.claude/settings.json` by hand,
+*grazr* sees no usage. It says so in a toast when a Claude pane starts, and the
+action `grazr: connect to Claude's status line` puts it back. The disconnect
+action restores your previous status line.
+
 Then list them in the order you want them used:
 
 ```sh
@@ -85,32 +99,11 @@ REMAINING_WEEKLY=20      # weekly windows get more margin, because losing one co
 ACCOUNTS="work personal" # preference order, first with headroom wins
 ENABLED=1
 DRY_RUN=0                # 1 = log the decision, do not swap
-LIVE_USAGE_BELOW=45      # start confirming here, above the thresholds
 ```
 
-Start with `DRY_RUN=1` for a day. Decisions show up in `herdr plugin log`.
-
-### Why `LIVE_USAGE_BELOW` exists
-
-Claude writes what it knows about your limits into `~/.claude.json`, and that
-copy can sit unrefreshed for an hour, long enough for a window to run dry
-unseen. So once headroom drops below this mark, *grazr* asks the same endpoint
-Claude asks, using the credential it already keeps. Above it, nothing reaches
-for the network.
-
-Keep the mark above the thresholds. The gap between the two is where *grazr*
-watches, and it needs enough room to catch a reading that is behind before it
-drops past the line. `0` turns the call off and leaves *grazr* with whatever
-Claude last wrote down.
-
-While another account could take over, *grazr* checks again after one minute
-at most. It saves each live answer and measures how fast usage is falling, and
-if the account is likely to cross a limit before the next check, it switches
-now. A copy above the mark is trusted for five minutes, then confirmed, because
-Claude refreshes it on its own schedule and a burst across several panes can
-spend a window in between. With nowhere to go *grazr* asks rarely, and only
-about a copy it cannot trust. Checks only run when a Claude turn ends. *grazr*
-does not run a timer in the background.
+Start with `DRY_RUN=1` for a day. Every decision is written to `grazr.log` in
+the plugin's state directory (`herdr plugin state-dir wazum.grazr`), with a
+timestamp, since the status line's own output is the bar.
 
 ### Turn Herdr's toasts on
 
@@ -136,10 +129,10 @@ A plugin toast lasts about three seconds and there is no setting for it, so
 `terminal` delivery to read it at your own pace, or set
 `HERDR_DISABLE_SOUND=1` for silence.
 
-Herdr drops a toast while another one is on screen. For the "nothing left" and
-"account restricted" messages, *grazr* notices and says it again next time
-instead of assuming you read it. A rotation is announced once, so a dropped
-toast still leaves the swap in `herdr plugin log`.
+Herdr drops a toast while another one is on screen. For the "every account is
+low" message, *grazr* notices and says it again next time instead of assuming
+you read it. A rotation is announced once, so a dropped toast still leaves the
+swap in `grazr.log`.
 
 ## Swap on demand
 
@@ -170,8 +163,8 @@ so in a toast, with the earliest reset time, and in `herdr plugin log`.
   <img src="docs/rotation-toast.png" alt="grazr's toast after a rotation: now on personal" width="606">
 </p>
 
-*grazr* says which account it moved to, in a toast and in `herdr plugin log`. To
-see what is enrolled and what each account has left:
+*grazr* says which account it moved to, in a toast and in `grazr.log`. To see
+what is enrolled and what each account has left:
 
 ```sh
 herdr plugin pane open --plugin wazum.grazr --entrypoint status
@@ -225,11 +218,12 @@ because repainting one can jump it to the bottom.
 
 ## What it will not do
 
-- Rotate away from an account the server has restricted. Moving off a
-  restricted account is how you get around the restriction, and the Usage
-  Policy forbids that. *grazr* stops and tells you.
-- Act on usage data it cannot trust. If the cached usage belongs to another
-  account, or is more than an hour old, *grazr* does nothing.
+- Act on a reading from an account it has left. A session keeps reporting the
+  old account until its next request, and *grazr* tells those readings apart by
+  the window's reset time and drops them.
+- Touch a pane that already hit the wall. *grazr* swaps before that; if a pane
+  does show a limit, press `Esc` and send again, and it goes out on the new
+  account.
 - Write a credential it cannot write whole. macOS `security` quietly truncates
   an over-long input and destroys the item, so *grazr* measures first and
   refuses.
