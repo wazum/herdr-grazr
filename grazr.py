@@ -63,14 +63,17 @@ TURN_ENDS = ("idle", "done")
 # Telling the user is worth a moment, but not a stuck hook on every turn end.
 NOTIFY_TIMEOUT_SECONDS = 5
 
-# The floor between two live usage calls, however many panes are idling. A
-# reading that says a rotation is due waits on the shorter one, because five
-# minutes of drift is a lot of window at a heavy pace. A reading grazr cannot
-# see at all, with nowhere to rotate to, waits on the longest: it buys a warning
-# and a pace to measure from, not a swap, and the blind spell runs for hours.
-FETCH_INTERVAL_SECONDS = 300
-URGENT_FETCH_INTERVAL_SECONDS = 60
+# The floor between two live usage calls, however many panes are idling. With
+# an account able to take over, the call decides a swap and the forecast looks
+# this far ahead, and at a heavy pace a minute is already a lot of window. With
+# nowhere to go the call buys a warning and a pace to measure from, not a swap,
+# and the blind spell runs for hours.
+LIVE_FETCH_INTERVAL_SECONDS = 60
 BLIND_FETCH_INTERVAL_SECONDS = 1800
+
+# Claude refreshes its cache on its own schedule, and a burst across several
+# panes can spend a comfortable window between two refreshes.
+TRUST_CACHE_FOR_SECONDS = 300
 
 
 def notify(title, body, spawn=subprocess.run):
@@ -482,12 +485,13 @@ def hook(runtime=None):
     active, limits, fetched_at = claude.inspect_reading(paths, now)
     if active is None:
         return 0
+    decision_limits = limits
 
     # _fetch_due stamps the interval as a side effect, so it goes last: a call
-    # refused for any other reason must not spend the next five minutes.
+    # refused for any other reason must not spend the next interval.
     estimate = _estimate(state_dir, active, limits, fetched_at, now)
     if (
-        _worth_asking(estimate, config.live_usage_below)
+        _worth_asking(estimate, config.live_usage_below, _age_seconds(fetched_at, now))
         # Ordered by what each costs to answer, cheapest first. An auth setting
         # makes a swap change nothing, so the usage behind it is not worth a call.
         and not claude.settings_auth_override(paths.config_dir)
@@ -501,10 +505,15 @@ def hook(runtime=None):
             if _announce_once(state_dir, "unconfirmed", "grazr: usage check failed", line):
                 print(line)
         else:
+            # Decided on the forecast, recorded as seen.
             limits = answer
+            rates = _record_reading(
+                state_dir, active, answer, now.timestamp() * 1000, "live_reading"
+            )
+            decision_limits = core.forecast(answer, rates, LIVE_FETCH_INTERVAL_SECONDS)
 
     # The common path ends here: no account store, no lock, no subprocess.
-    if not core.needs_rotation(limits, now, config.thresholds):
+    if not core.needs_rotation(decision_limits, now, config.thresholds):
         return 0
 
     # Only the rotate and announce paths take the lock. The common path above
@@ -518,9 +527,9 @@ def hook(runtime=None):
         # above is the better of the two.
         swapped_to, its_limits, _ = claude.inspect_reading(paths, now)
         if swapped_to != active:
-            active, limits = swapped_to, its_limits
+            active, limits, decision_limits = swapped_to, its_limits, its_limits
         enrolled = accounts.load(paths, config.accounts)
-        decision = core.decide(limits, active, enrolled, now, config.thresholds)
+        decision = core.decide(decision_limits, active, enrolled, now, config.thresholds)
         # Only a decision to move pays for the settings.json read, so the common
         # path is unchanged. rotate refuses this too, but a raised error suits
         # the person who just pressed a key, not every turn end of every pane.
@@ -541,16 +550,22 @@ def hook(runtime=None):
     return 0
 
 
-def _worth_asking(limits, below):
-    """Plenty of headroom needs no second opinion, and a restricted account has
-    nothing to learn. What is left is the band where a swap may be due, plus
-    "unknown", which is the stale cache that hid a spent window in the first
-    place."""
+def _worth_asking(limits, below, age_seconds):
+    """Plenty of fresh headroom needs no second opinion, and a restricted
+    account has nothing to learn. What is left is the band where a swap may be
+    due, a reading old enough to have drifted out of it unseen, and "unknown",
+    which is the stale cache that hid a spent window in the first place."""
     if not below or limits == "locked":
         return False
-    if limits == "unknown":
+    if limits == "unknown" or age_seconds > TRUST_CACHE_FOR_SECONDS:
         return True
     return any(entry.remaining < below for entry in limits)
+
+
+def _age_seconds(fetched_at, now):
+    if fetched_at is None:
+        return 0
+    return (now.timestamp() * 1000 - fetched_at) / 1000
 
 
 def _estimate(state_dir, active, limits, fetched_at, now):
@@ -560,22 +575,24 @@ def _estimate(state_dir, active, limits, fetched_at, now):
     Only ever decides whether the reading is worth confirming. A rotation is
     always taken on a reading, never on this.
     """
-    rates = _record_reading(state_dir, active, limits, fetched_at)
+    rates = _record_reading(state_dir, active, limits, fetched_at, "reading")
     if not isinstance(limits, list) or fetched_at is None:
         return limits
     age_hours = (now.timestamp() * 1000 - fetched_at) / core.MS_PER_HOUR
     return core.corrected(limits, rates, age_hours)
 
 
-def _record_reading(state_dir, active, limits, fetched_at):
+def _record_reading(state_dir, active, limits, fetched_at, filename):
     """Keep the newest reading so the next turn end can tell the pace, and
     return the pace since the one before it.
 
     Kept per account: a rate measured across a swap would describe two windows
-    at once. A reading Claude has not refreshed is stored again as itself, so
-    the pair either side of it still spans the real interval.
+    at once. Kept per source, in `filename`, so the cache keeps its own pace
+    while live answers come in newer than it. A reading Claude has not
+    refreshed is stored again as itself, so the pair either side of it still
+    spans the real interval.
     """
-    path = os.path.join(state_dir, "reading")
+    path = os.path.join(state_dir, filename)
     previous = None
     try:
         with open(path) as handle:
@@ -600,18 +617,11 @@ def _record_reading(state_dir, active, limits, fetched_at):
 
 
 def _interval(paths, config, active, estimate, now):
-    """How long the endpoint gets left alone before the next call, or None to
-    leave it alone entirely.
-
-    With an account able to take over, the call decides a swap and waits the
-    ordinary floor, or the short one when the reading already says to move.
-    With nowhere to go the call decides nothing, so it is only worth making
-    when grazr cannot see the active account at all.
-    """
+    """With an account able to take over, the call decides a swap and stays on
+    the short leash. With nowhere to go it decides nothing, so it is only worth
+    making when grazr cannot see the active account at all."""
     if _somewhere_to_go(paths, config, active, now):
-        if core.needs_rotation(estimate, now, config.thresholds):
-            return URGENT_FETCH_INTERVAL_SECONDS
-        return FETCH_INTERVAL_SECONDS
+        return LIVE_FETCH_INTERVAL_SECONDS
     return BLIND_FETCH_INTERVAL_SECONDS if estimate == "unknown" else None
 
 
@@ -629,26 +639,36 @@ def _fetch_due(state_dir, interval):
     interval means the call is not worth making at all."""
     if interval is None:
         return False
-    marker = os.path.join(state_dir, "last_usage_fetch")
-    try:
-        if time.time() - os.path.getmtime(marker) < interval:
+    # Panes reaching a stale marker together would each read it as due. Only the
+    # check and the stamp need the lock: once stamped, the marker turns the
+    # others away on its own.
+    with _file_lock(os.path.join(state_dir, "usage_fetch.lock")) as held:
+        if not held:
             return False
-    except OSError:
-        pass
-    # Stamped before the call, not after: a slow endpoint must not release
-    # every other pane to pile on behind it.
-    with open(marker, "a"):
-        os.utime(marker, None)
-    return True
+        marker = os.path.join(state_dir, "last_usage_fetch")
+        try:
+            if time.time() - os.path.getmtime(marker) < interval:
+                return False
+        except OSError:
+            pass
+        # Stamped before the call, not after: a slow endpoint must not release
+        # every other pane to pile on behind it.
+        with open(marker, "a"):
+            os.utime(marker, None)
+        return True
 
 
-@contextlib.contextmanager
 def _rotation_lock(state_dir):
     """One pane at a time past the threshold. Several panes go idle together
     when a long turn ends, and each would otherwise park over the others."""
+    return _file_lock(os.path.join(state_dir, "rotate.lock"))
+
+
+@contextlib.contextmanager
+def _file_lock(path):
     # "w" would truncate before flock is even attempted, so a pane that goes on
     # to lose the race still writes to the file.
-    handle = open(os.path.join(state_dir, "rotate.lock"), "a")
+    handle = open(path, "a")
     try:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)

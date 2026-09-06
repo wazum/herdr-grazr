@@ -103,6 +103,15 @@ watches, and it needs enough room to catch a reading that is behind before it
 drops past the line. `0` turns the call off and leaves *grazr* with whatever
 Claude last wrote down.
 
+While another account could take over, *grazr* checks again after one minute
+at most. It saves each live answer and measures how fast usage is falling, and
+if the account is likely to cross a limit before the next check, it switches
+now. A copy above the mark is trusted for five minutes, then confirmed, because
+Claude refreshes it on its own schedule and a burst across several panes can
+spend a window in between. With nowhere to go *grazr* asks rarely, and only
+about a copy it cannot trust. Checks only run when a Claude turn ends. *grazr*
+does not run a timer in the background.
+
 ### Turn Herdr's toasts on
 
 **Herdr toasts are off by default**, so *grazr*'s notification will not show

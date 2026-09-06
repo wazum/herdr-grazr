@@ -33,6 +33,17 @@ def clock(when):
     return when.astimezone().strftime("%a %H:%M")
 
 
+def frozen_clock(start):
+    class Clock:
+        current = start
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current
+
+    return Clock
+
+
 def limit(group="session", remaining=50, kind=None, scope=None, resets_at=LATER):
     return Limit(kind=kind or group, scope=scope, group=group, remaining=remaining, resets_at=resets_at)
 
@@ -2137,7 +2148,7 @@ class ReadingRecordTest(unittest.TestCase):
 
     def record(self, account, remaining, fetched_at):
         limits = [limit(group="session", remaining=remaining)]
-        return grazr._record_reading(self.directory, account, limits, fetched_at)
+        return grazr._record_reading(self.directory, account, limits, fetched_at, "reading")
 
     def test_it_reports_the_pace_between_two_readings(self):
         self.record("uuid-work", 90, 0)
@@ -2579,6 +2590,8 @@ class HookTest(EnrolledPairFixture):
         self.write_config('ACCOUNTS="work personal"\nLIVE_USAGE_BELOW=25\n')
         self.write_usage_at(percent=10, minutes_ago=55)  # 90% left
         self.run_hook()
+        os.utime(os.path.join(self.state_dir, "last_usage_fetch"),
+                 (time.time() - 61, time.time() - 61))
         self.write_usage_at(percent=50, minutes_ago=25)  # 50% left half an hour on
         asked = []
 
@@ -2617,8 +2630,7 @@ class HookTest(EnrolledPairFixture):
 
         self.assertEqual(len(asked), 2, "90 seconds is long enough when a swap is due")
 
-    def test_a_reading_with_room_still_waits_the_full_interval(self):
-        """The watching call stays on the long leash, or the saving is undone."""
+    def test_a_reading_in_the_watch_band_uses_the_urgent_interval(self):
         self.write_usage(percent=60)  # 40% left: under the mark, above the line
         asked = []
 
@@ -2628,7 +2640,7 @@ class HookTest(EnrolledPairFixture):
                      (time.time() - 90, time.time() - 90))
             self.run_hook()
 
-        self.assertEqual(len(asked), 1, "nothing is due, so the second look waits")
+        self.assertEqual(len(asked), 2)
 
     def test_the_panes_are_tagged_after_the_lock_is_let_go(self):
         """Holding the rotation lock through the tagging stalls every other
@@ -2655,6 +2667,87 @@ class HookTest(EnrolledPairFixture):
 
         self.assertEqual(asked, [1], "a reading it cannot see is worth one look")
 
+    def test_an_unknown_reading_is_confirmed_again_after_the_urgent_interval(self):
+        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
+            json.dump(config_json(account_uuid="uuid-someone-else"), handle)
+        asked = []
+        live = [Limit("session", None, "session", 40, None)]
+
+        with mock.patch.object(
+            claude, "fetch_limits", lambda store, **kw: asked.append(1) or live
+        ):
+            self.run_hook()
+            os.utime(os.path.join(self.state_dir, "last_usage_fetch"),
+                     (time.time() - 61, time.time() - 61))
+            self.run_hook()
+
+        self.assertEqual(len(asked), 2)
+
+    def test_live_pace_rotates_before_the_next_reading_crosses_the_threshold(self):
+        """The swap is made on the forecast, but what it records is what was
+        actually seen."""
+        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
+            json.dump(config_json(account_uuid="uuid-someone-else"), handle)
+        answers = iter([
+            [Limit("session", None, "session", 40, None)],
+            [Limit("session", None, "session", 31, None)],
+        ])
+        Clock = frozen_clock(datetime(2026, 9, 6, 7, 28, tzinfo=timezone.utc))
+
+        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: next(answers)), \
+             mock.patch.object(grazr, "datetime", Clock):
+            self.run_hook()
+            os.utime(os.path.join(self.state_dir, "last_usage_fetch"),
+                     (time.time() - 61, time.time() - 61))
+            Clock.current += timedelta(seconds=61)
+            self.run_hook()
+
+        self.assertEqual(
+            (len(self.rotations), self.rotations[0][4][0].remaining), (1, 31)
+        )
+
+    def test_an_older_disk_reading_does_not_replace_live_history(self):
+        Clock = frozen_clock(datetime(2026, 9, 6, 7, 28, tzinfo=timezone.utc))
+
+        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
+            json.dump(config_json(percent=60, fetched_at=Clock.current - timedelta(minutes=10)),
+                      handle)
+        answers = iter([
+            [Limit("session", None, "session", 40, None)],
+            [Limit("session", None, "session", 31, None)],
+        ])
+
+        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: next(answers)), \
+             mock.patch.object(grazr, "datetime", Clock):
+            self.run_hook()
+            os.utime(os.path.join(self.state_dir, "last_usage_fetch"),
+                     (time.time() - 301, time.time() - 301))
+            Clock.current += timedelta(minutes=5)
+            self.run_hook()
+
+        self.assertEqual(len(self.rotations), 1)
+
+    def test_live_pace_only_looks_ahead_to_the_next_check(self):
+        Clock = frozen_clock(datetime(2026, 9, 6, 7, 28, tzinfo=timezone.utc))
+
+        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
+            json.dump(config_json(percent=60, fetched_at=Clock.current - timedelta(minutes=10)),
+                      handle)
+        answers = iter([
+            [Limit("session", None, "session", 40, None)],
+            [Limit("session", None, "session", 34, None)],
+        ])
+
+        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: next(answers)), \
+             mock.patch.object(grazr, "datetime", Clock):
+            self.run_hook()
+            os.utime(os.path.join(self.state_dir, "last_usage_fetch"),
+                     (time.time() - 301, time.time() - 301))
+            Clock.current += timedelta(minutes=5)
+            self.run_hook()
+
+        self.assertEqual(len(self.rotations), 0)
+
     def test_a_blind_spell_is_not_asked_about_every_few_minutes(self):
         """The desync runs for hours, and one call every ordinary interval
         through that would be dozens for a swap grazr still cannot make."""
@@ -2670,6 +2763,48 @@ class HookTest(EnrolledPairFixture):
             self.run_hook()
 
         self.assertEqual(len(asked), 1, "ten minutes on is still too soon to look again")
+
+    def test_a_blind_spell_is_not_warned_about_on_a_half_hour_forecast(self):
+        """The long wait between two blind looks is not headroom already spent."""
+        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
+            json.dump(config_json(account_uuid="uuid-someone-else"), handle)
+        self.write_account_snapshot("uuid-work", remaining=1)
+        self.write_account_snapshot("uuid-personal", remaining=1)
+        answers = iter([
+            [Limit("session", None, "session", 60, None)],
+            [Limit("session", None, "session", 40, None)],
+        ])
+        Clock = frozen_clock(datetime(2026, 9, 6, 7, 28, tzinfo=timezone.utc))
+
+        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: next(answers)), \
+             mock.patch.object(grazr, "datetime", Clock):
+            self.run_hook()
+            os.utime(os.path.join(self.state_dir, "last_usage_fetch"),
+                     (time.time() - 1801, time.time() - 1801))
+            Clock.current += timedelta(minutes=30)
+            self.run_hook()
+
+        self.assertEqual((self.notices, self.rotations), ([], []))
+
+    def test_a_reading_above_the_mark_is_confirmed_once_it_is_minutes_old(self):
+        """Between two of Claude's cache refreshes a burst can spend a window
+        grazr never looked at."""
+        self.write_usage_at(percent=10, minutes_ago=6)
+        asked = []
+
+        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
+            self.run_hook()
+
+        self.assertEqual(asked, [1])
+
+    def test_a_reading_above_the_mark_is_trusted_while_fresh(self):
+        self.write_usage_at(percent=10, minutes_ago=2)
+        asked = []
+
+        with mock.patch.object(claude, "fetch_limits", lambda store, **kw: asked.append(1)):
+            self.run_hook()
+
+        self.assertEqual(asked, [])
 
     def test_it_does_not_ask_the_endpoint_when_there_is_nowhere_to_go(self):
         """The call is undocumented and rate-limited, and its whole purpose is
@@ -2713,6 +2848,13 @@ class HookTest(EnrolledPairFixture):
                 self.run_hook()
 
         self.assertEqual(len(asked), 1)
+
+    def test_a_check_another_pane_is_already_making_is_not_repeated(self):
+        """Panes reaching a stale marker together cannot be told apart by the
+        marker alone."""
+        with grazr._file_lock(os.path.join(self.state_dir, "usage_fetch.lock")) as held:
+            self.assertTrue(held)
+            self.assertFalse(grazr._fetch_due(self.state_dir, 60))
 
     def test_setting_the_watch_mark_to_zero_never_asks(self):
         self.write_stale_usage(percent=99)

@@ -17,8 +17,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Fewer calls to the undocumented usage endpoint. *grazr* never asks when no
   other account could take over, and it weighs the age Claude stamped on a
   reading against the pace the last two imply, so a stale-looking number earns
-  a call while a fresh one above the mark does not. The estimate decides only
-  when to ask. A swap is still made against a reading.
+  a call while a fresh one above the mark does not. The estimate only decides
+  when to ask.
+
+- *grazr* saves each live answer and measures the pace between two. While
+  another account could take over, it checks again after one minute at most,
+  and it switches early when that pace says the window would cross a threshold
+  before the next check. A cached reading above the mark is taken at its word
+  for five minutes, then confirmed: Claude refreshes that cache on its own
+  schedule, and a burst across several panes can spend a window between two
+  refreshes. A lock keeps two panes from making the same check at once.
 
 ### Changed
 
@@ -46,9 +54,6 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   behind for a while, and staying silent through it meant *grazr* could neither
   warn nor measure the pace. It asks rarely there, since the call buys those
   two things rather than a swap.
-- Once a reading says a swap is due, the confirming call comes on a one minute
-  leash instead of five. At a heavy pace five minutes of drift is a lot of
-  window.
 - An endpoint that does not answer is reported instead of passing in silence.
   Falling back to Claude's cached reading is right, but doing it quietly let a
   window run out while *grazr* looked like it was working.

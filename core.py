@@ -3,8 +3,6 @@ from collections import namedtuple
 Limit = namedtuple("Limit", "kind scope group remaining resets_at")
 Account = namedtuple("Account", "id name snapshot")
 
-# One cached usage reading: the millisecond stamp the agent wrote on it, and
-# the headroom it reported per limit group.
 Reading = namedtuple("Reading", "fetched_at remaining")
 
 MS_PER_HOUR = 3_600_000
@@ -33,13 +31,11 @@ def burn_rate(previous, current):
 
 
 def corrected(limits, rates, age_hours):
-    """`limits` with each group's headroom reduced by what the pace implies has
-    been spent since the reading was taken.
-
-    An estimate, so it decides only whether the reading is worth a second
-    opinion, never whether to rotate. A fresh reading corrects to itself, which
-    is what keeps a healthy account off the network entirely.
-    """
+    """On the cached reading this decides whether a second opinion is worth a
+    call. On a live answer, projected to the next check by `forecast`, it
+    decides whether to move before the window crosses the line. A reading with
+    no pace behind it corrects to itself, which is what keeps a healthy account
+    off the network entirely."""
     if age_hours <= 0 or not rates:
         return limits
     return [
@@ -48,6 +44,11 @@ def corrected(limits, rates, age_hours):
         )
         for entry in limits
     ]
+
+
+def forecast(limits, rates, horizon_seconds):
+    """Headroom expected when the next live check becomes due."""
+    return corrected(limits, rates, horizon_seconds * 1000 / MS_PER_HOUR)
 
 
 def needs_rotation(limits, now, thresholds):
