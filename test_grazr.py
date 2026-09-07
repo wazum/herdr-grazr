@@ -1546,12 +1546,17 @@ class InteractiveExitTest(unittest.TestCase):
             accounts_dir=os.path.join(directory, "accounts"),
         )
         os.mkdir(paths.accounts_dir)
+        runtime = grazr.Runtime(
+            paths=paths,
+            store=FakeStore(),
+            state_dir=directory,
+            config=grazr.load_config(os.path.join(directory, "config.env")),
+        )
 
         with mock.patch.object(grazr, "read_key", lambda: "l"), \
-                mock.patch.object(grazr, "_paths", lambda: (paths, FakeStore(), directory)), \
                 mock.patch.object(subprocess, "run", side_effect=FileNotFoundError("claude")), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
-            code = grazr.enrol()
+            code = grazr.enrol(runtime)
 
         self.assertEqual(code, 1)
         self.assertIn("claude", out.getvalue())
