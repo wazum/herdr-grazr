@@ -2372,6 +2372,16 @@ class StatuslineTest(EnrolledPairFixture):
 
         self.assertEqual(self.rotations, [])
 
+    def test_two_accounts_sharing_a_reset_time_still_rotate(self):
+        """Reset times fall on ten-minute marks, so two accounts can share one.
+        That alone must not make a reading look like the other account's."""
+        shared = datetime.now(timezone.utc) + timedelta(hours=3)
+        self.write_account_snapshot("uuid-personal", remaining=95, resets_at=shared)
+
+        self.run_statusline(self.payload(used=99, resets_at=int(shared.timestamp())))
+
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
+
     def test_a_payload_from_the_account_just_left_is_ignored(self):
         """A session makes its next request on the new account, but until then
         its status line still reports the one it left, under that window's

@@ -537,24 +537,30 @@ def _previous_bar(state_dir, payload, spawn):
 
 def _left_behind(limits, active, enrolled):
     """A session keeps reporting the account it left until its next request.
-    That window's reset time is parked in the old account's snapshot, which is
-    how such a payload is told apart."""
-    resets = {
-        entry.resets_at.replace(microsecond=0)
+    Such a reading shows that account's windows, by reset time, with no more
+    usage than it had when parked. Two accounts can share a reset time, so
+    every window has to match on both counts."""
+    windows = {
+        (entry.group, entry.resets_at.replace(microsecond=0)): entry.remaining
         for entry in limits
-        if entry.group == "session" and entry.resets_at
+        if entry.resets_at
     }
-    return any(
-        entry.id != active
-        and isinstance(entry.snapshot, list)
-        and any(
-            parked.group == "session"
-            and parked.resets_at
-            and parked.resets_at.replace(microsecond=0) in resets
-            for parked in entry.snapshot
-        )
-        for entry in enrolled
-    )
+    if not windows:
+        return False
+    for entry in enrolled:
+        if entry.id == active or not isinstance(entry.snapshot, list):
+            continue
+        parked = {
+            (item.group, item.resets_at.replace(microsecond=0)): item.remaining
+            for item in entry.snapshot
+            if item.resets_at
+        }
+        if all(
+            window in parked and remaining >= parked[window]
+            for window, remaining in windows.items()
+        ):
+            return True
+    return False
 
 
 def _log(state_dir, now, line):
