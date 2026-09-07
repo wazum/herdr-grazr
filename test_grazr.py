@@ -2347,6 +2347,31 @@ class StatuslineTest(EnrolledPairFixture):
 
         self.assertEqual(printed, "")
 
+    def test_a_stale_pane_reading_cannot_hide_a_threshold_crossing(self):
+        """An idle pane repeats old figures every minute. Between a low reading
+        and the detached decision, a repeat must not put headroom back."""
+        reset = int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp())
+        for used in (90, 10):
+            payload = self.payload(used=used, resets_at=reset)
+            self.invoke(lambda runtime, p=payload: grazr.statusline(runtime, p, detach=lambda: None))
+
+        self.invoke(grazr.decide)
+
+        self.assertEqual(len(self.rotations), 1)
+
+    def test_a_new_window_starts_the_record_afresh(self):
+        now = datetime.now(timezone.utc)
+        for used, reset in (
+            (90, int((now + timedelta(minutes=1)).timestamp())),
+            (10, int((now + timedelta(hours=5)).timestamp())),
+        ):
+            payload = self.payload(used=used, resets_at=reset)
+            self.invoke(lambda runtime, p=payload: grazr.statusline(runtime, p, detach=lambda: None))
+
+        self.invoke(grazr.decide)
+
+        self.assertEqual(self.rotations, [])
+
     def test_a_payload_from_the_account_just_left_is_ignored(self):
         """A session makes its next request on the new account, but until then
         its status line still reports the one it left, under that window's

@@ -4,6 +4,21 @@ Limit = namedtuple("Limit", "kind scope group remaining resets_at")
 Account = namedtuple("Account", "id name snapshot")
 
 
+def merged(previous, current):
+    """A window already on record keeps the lowest headroom it has shown. Idle
+    panes repeat old figures, and a repeat must not put headroom back. A new
+    window is taken as it comes."""
+    if not isinstance(previous, list):
+        return current
+    lowest = {(entry.group, entry.resets_at): entry.remaining for entry in previous}
+    return [
+        entry._replace(
+            remaining=min(entry.remaining, lowest.get((entry.group, entry.resets_at), entry.remaining))
+        )
+        for entry in current
+    ]
+
+
 def needs_rotation(limits, now, thresholds):
     return not _has_headroom(limits, now, thresholds)
 

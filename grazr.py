@@ -443,7 +443,9 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
     active = claude.active_account(paths)
     if active is None or _left_behind(limits, active, accounts.load(paths, [])):
         return 0
-    accounts.record_snapshot(paths, active, limits)
+    with _file_lock(os.path.join(state_dir, "readings.lock"), wait=True):
+        limits = core.merged(_latest_reading(paths, active), limits)
+        accounts.record_snapshot(paths, active, limits)
     if core.needs_rotation(limits, datetime.now(timezone.utc), config.thresholds):
         (detach or _detach_decide)()
     return 0
@@ -576,13 +578,13 @@ def _rotation_lock(state_dir):
 
 
 @contextlib.contextmanager
-def _file_lock(path):
+def _file_lock(path, wait=False):
     # "w" would truncate before flock is even attempted, so a pane that goes on
     # to lose the race still writes to the file.
     handle = open(path, "a")
     try:
         try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(handle, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
         except IOError:
             yield False
             return
