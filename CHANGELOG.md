@@ -28,10 +28,6 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Every decision is written to `grazr.log` in the state directory with a
   timestamp, since the status line's own output is the bar.
 
-### Changed
-
-- `REMAINING_SESSION` now defaults to 30. It is still yours to set.
-
 ### Removed
 
 - `LIVE_USAGE_BELOW` and the call to the undocumented usage endpoint. The

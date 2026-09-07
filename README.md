@@ -94,7 +94,7 @@ $EDITOR "$(herdr plugin config-dir wazum.grazr)/config.env"
 ```
 
 ```sh
-REMAINING_SESSION=30     # rotate when the 5-hour window has less than this left
+REMAINING_SESSION=15     # rotate when the 5-hour window has less than this left
 REMAINING_WEEKLY=20      # weekly windows get more margin, because losing one costs days
 ACCOUNTS="work personal" # preference order, first with headroom wins
 ENABLED=1

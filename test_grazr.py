@@ -1566,16 +1566,16 @@ class ConfigTest(unittest.TestCase):
 
 
 class ThresholdDefaultTest(unittest.TestCase):
-    """Claude's cached reading runs behind the window it describes, so the mark
-    has to clear the threshold by more than that lag plus one check interval."""
+    """Readings arrive with every message, so the default needs no room for a
+    reading that lags."""
 
-    def test_the_session_default_leaves_room_for_a_lagging_reading(self):
+    def test_the_session_default_is_fifteen_percent(self):
         directory = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, directory, True)
 
         config = grazr.load_config(os.path.join(directory, "config.env"))
 
-        self.assertEqual(config.thresholds["session"], 30)
+        self.assertEqual(config.thresholds["session"], 15)
 
 
 class PathResolutionTest(unittest.TestCase):
@@ -2215,7 +2215,7 @@ class StatuslineTest(EnrolledPairFixture):
         )
 
     def test_a_low_reading_rotates_before_the_next_message(self):
-        self.run_statusline(self.payload(used=75))
+        self.run_statusline(self.payload(used=90))
 
         self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
 
@@ -2225,7 +2225,7 @@ class StatuslineTest(EnrolledPairFixture):
         started = []
 
         with mock.patch.object(grazr.subprocess, "Popen", lambda *a, **k: started.append((a, k))):
-            self.invoke(lambda runtime: grazr.statusline(runtime, self.payload(used=75)))
+            self.invoke(lambda runtime: grazr.statusline(runtime, self.payload(used=90)))
 
         (argv,), keywords = started[0]
         self.assertEqual(argv[-1], "decide")
@@ -2249,7 +2249,7 @@ class StatuslineTest(EnrolledPairFixture):
         self.assertEqual(printed, "inner bar")
 
     def test_without_a_previous_status_line_the_bar_stays_empty(self):
-        _, printed = self.run_statusline(self.payload(used=75))
+        _, printed = self.run_statusline(self.payload(used=90))
 
         self.assertEqual(printed, "")
 
@@ -2268,18 +2268,18 @@ class StatuslineTest(EnrolledPairFixture):
     def test_enabled_off_leaves_the_account_alone(self):
         self.write_config('ACCOUNTS="work personal"\nENABLED=0\n')
 
-        self.run_statusline(self.payload(used=75))
+        self.run_statusline(self.payload(used=90))
 
         self.assertEqual(self.rotations, [])
 
     def test_the_decision_goes_to_the_log_since_stdout_is_the_bar(self):
-        self.run_statusline(self.payload(used=75))
+        self.run_statusline(self.payload(used=90))
 
         with open(os.path.join(self.state_dir, "grazr.log")) as handle:
             self.assertIn("rotated work -> personal", handle.read())
 
     def test_the_panes_are_tagged_after_the_lock_is_let_go(self):
-        self.run_statusline(self.payload(used=75))
+        self.run_statusline(self.payload(used=90))
 
         self.assertEqual((self.tags, self.lock_free_while_tagging), (["personal"], [True]))
 
@@ -2289,8 +2289,8 @@ class StatuslineTest(EnrolledPairFixture):
         with open(os.path.join(self.claude_dir, "settings.json"), "w") as handle:
             json.dump({"env": {"ANTHROPIC_API_KEY": "sk-ant-x"}}, handle)
 
-        self.run_statusline(self.payload(used=75))
-        self.run_statusline(self.payload(used=75))
+        self.run_statusline(self.payload(used=90))
+        self.run_statusline(self.payload(used=90))
 
         with open(os.path.join(self.state_dir, "grazr.log")) as handle:
             logged = handle.read()
@@ -2321,8 +2321,8 @@ class StatuslineTest(EnrolledPairFixture):
     def test_a_repeated_decision_is_logged_once(self):
         self.write_config('ACCOUNTS="work personal"\nDRY_RUN=1\n')
 
-        self.run_statusline(self.payload(used=75))
-        self.run_statusline(self.payload(used=75))
+        self.run_statusline(self.payload(used=90))
+        self.run_statusline(self.payload(used=90))
 
         with open(os.path.join(self.state_dir, "grazr.log")) as handle:
             self.assertEqual(handle.read().count("would rotate"), 1)
@@ -2334,7 +2334,7 @@ class StatuslineTest(EnrolledPairFixture):
         self.addCleanup(held.close)
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
-        self.run_statusline(self.payload(used=75))
+        self.run_statusline(self.payload(used=90))
 
         self.assertEqual(self.rotations, [])
 
