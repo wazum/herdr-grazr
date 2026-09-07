@@ -21,12 +21,16 @@ A Claude pane goes dead when the 5-hour or weekly limit hits. Getting it back
 means logging in as another account by hand. *grazr* does not wait for the wall.
 When a window is nearly spent, it swaps which stored credential the official
 `claude` binary reads. It sees the usage Claude reports after every message
-and swaps within one, mid-turn, so no pane is ever blocked or prompted.
+and swaps within one, mid-turn, so a pane is not blocked or prompted.
 
 **You do nothing.** There is no command to run and no prompt to answer. A pane
 mid-task keeps going on the fresh account, and a pane you were not watching
 never shows that anything changed. You keep working as if nothing had happened,
 because from where you sit, nothing did.
+
+This is best effort. Claude's status line is debounced and a slow update can
+be cancelled, so a pane that burns through its last percent inside one message
+can still hit the wall. What to do then is under "What it will not do".
 
 **Requires** two or more Claude subscriptions that are all yours. The badges
 above carry the rest.
