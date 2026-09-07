@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import json
 import os
 import shutil
@@ -222,10 +223,10 @@ def rotate(paths, store, active_id, next_id, snapshot):
         if leaving is None:
             raise RuntimeError("no live credential to park; refusing to swap")
         renew()
-        # The live credential already holding the arriving blob means an earlier
-        # try swapped the store and died before the identity write. Parking
-        # again would overwrite the outgoing account's own credential.
-        if leaving != arriving:
+        pending = _pending_swap(paths, store, active_id, leaving)
+        if pending is None:
+            # The marker goes first, so a retry can tell how far this got.
+            _write_swap_marker(paths, active_id, next_id, leaving)
             store.write_parked(active_id, leaving)
             renew()
             try:
@@ -236,7 +237,16 @@ def rotate(paths, store, active_id, next_id, snapshot):
                 # the pane on a spent account.
                 store.write_live(arriving)
             renew()
+        elif pending["next"] != next_id:
+            _merge_oauth_account(
+                paths.config_path, accounts.read(paths, pending["next"])["oauthAccount"]
+            )
+            _clear_swap_marker(paths)
+            raise RuntimeError(
+                "finished a swap to %s that had been interrupted; try again" % pending["next"]
+            )
         _merge_oauth_account(paths.config_path, identity)
+        _clear_swap_marker(paths)
 
     accounts.record_snapshot(paths, active_id, snapshot)
     return _expired_note(arriving)
@@ -361,6 +371,79 @@ def _read_settings(config_dir):
 def _write_settings(config_dir, settings):
     os.makedirs(config_dir, exist_ok=True)
     atomic.write(os.path.join(config_dir, "settings.json"), json.dumps(settings, indent=2) + "\n")
+
+
+SWAP_MARKER = ".swap.json"
+
+
+def _pending_swap(paths, store, active_id, live):
+    """The swap an earlier try left half done, once its credential has moved:
+    the retry then only writes the identity, instead of parking the arriving
+    credential over the outgoing one. None when there is nothing to resume. A
+    live credential that matches neither side is refused, not guessed at."""
+    pending = _read_swap_marker(paths)
+    if pending is None or pending["active"] != active_id:
+        _clear_swap_marker(paths)
+        return None
+    if _digest(live) == pending["leaving"]:
+        _clear_swap_marker(paths)
+        return None
+    arrived = store.read_parked(pending["next"])
+    if arrived is not None and _same_login(live, arrived):
+        return pending
+    parked = store.read_parked(active_id)
+    if parked is None or _digest(parked) != pending["leaving"]:
+        # Nothing was parked, so nothing moved. Claude refreshed the outgoing token.
+        _clear_swap_marker(paths)
+        return None
+    raise RuntimeError(
+        "a swap from %s to %s was interrupted and the live credential matches "
+        "neither account; not touching it. Log in again with `claude auth login`"
+        % (active_id, pending["next"])
+    )
+
+
+def _write_swap_marker(paths, active_id, next_id, leaving):
+    atomic.write(
+        os.path.join(paths.accounts_dir, SWAP_MARKER),
+        json.dumps({"active": active_id, "next": next_id, "leaving": _digest(leaving)}),
+    )
+
+
+def _read_swap_marker(paths):
+    try:
+        with open(os.path.join(paths.accounts_dir, SWAP_MARKER)) as handle:
+            marker = json.load(handle)
+        return marker if {"active", "next", "leaving"} <= set(marker) else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _clear_swap_marker(paths):
+    try:
+        os.remove(os.path.join(paths.accounts_dir, SWAP_MARKER))
+    except FileNotFoundError:
+        pass
+
+
+def _digest(blob):
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def _same_login(one, other):
+    """Same login, whatever MCP logins ride along. A swap carries those onto
+    the arriving blob, so the live copy stops matching its parked one."""
+    return _without_carried(one) == _without_carried(other)
+
+
+def _without_carried(blob):
+    try:
+        parsed = json.loads(blob)
+    except ValueError:
+        return blob
+    if not isinstance(parsed, dict):
+        return blob
+    return {key: value for key, value in parsed.items() if key not in CARRIED_CREDENTIAL_KEYS}
 
 
 def _carry_shared_keys(arriving, leaving):

@@ -1119,6 +1119,95 @@ class RotateTest(unittest.TestCase):
         self.assertEqual(self.store.live, "PARKED-PERSONAL")
         self.assertIsNone(self.read_account("uuid-work")["snapshot"])
 
+    def test_a_retry_after_a_crash_keeps_the_outgoing_credential(self):
+        """The arriving credential goes live with the outgoing account's MCP
+        logins on it, so it no longer matches its parked copy. A retry that
+        takes it for the outgoing account's parks it over the real one."""
+        self.store.live = json.dumps(
+            {"claudeAiOauth": {"accessToken": "work"}, "mcpOAuth": {"server": "token"}}
+        )
+        self.store.parked["uuid-personal"] = json.dumps({"claudeAiOauth": {"accessToken": "personal"}})
+        with mock.patch.object(claude, "_merge_oauth_account", side_effect=OSError("died")):
+            with self.assertRaises(OSError):
+                self.run_rotate()
+
+        self.run_rotate()
+
+        self.assertEqual(json.loads(self.store.parked["uuid-work"])["claudeAiOauth"], {"accessToken": "work"})
+        self.assertEqual(
+            json.loads(self.store.live),
+            {"claudeAiOauth": {"accessToken": "personal"}, "mcpOAuth": {"server": "token"}},
+        )
+        self.assertEqual(self.identity(), "uuid-personal")
+
+    def identity(self):
+        with open(self.config_path) as handle:
+            return json.load(handle)["oauthAccount"]["accountUuid"]
+
+    def crash_at(self, target):
+        return mock.patch.object(claude, target, side_effect=OSError("died"))
+
+    def test_a_crash_before_anything_moved_is_redone_whole(self):
+        with self.crash_at("_merge_oauth_account"), \
+                mock.patch.object(self.store, "write_parked", side_effect=OSError("died")):
+            with self.assertRaises(OSError):
+                self.run_rotate()
+
+        self.run_rotate()
+
+        self.assertEqual((self.store.parked["uuid-work"], self.store.live, self.identity()),
+                         ("LIVE-WORK", "PARKED-PERSONAL", "uuid-personal"))
+
+    def test_a_crash_between_parking_and_installing_is_redone_whole(self):
+        with mock.patch.object(self.store, "write_live", side_effect=OSError("died")):
+            with self.assertRaises(OSError):
+                self.run_rotate()
+
+        self.run_rotate()
+
+        self.assertEqual((self.store.parked["uuid-work"], self.store.live, self.identity()),
+                         ("LIVE-WORK", "PARKED-PERSONAL", "uuid-personal"))
+
+    def test_a_credential_refreshed_after_the_crash_is_left_alone(self):
+        """Live matches neither side, so nobody can say whose it is. Parking it
+        over either account would be a guess with a credential at stake."""
+        with self.crash_at("_merge_oauth_account"):
+            with self.assertRaises(OSError):
+                self.run_rotate()
+        self.store.live = "PARKED-PERSONAL-REFRESHED"
+
+        with self.assertRaises(RuntimeError) as refused:
+            self.run_rotate()
+
+        self.assertIn("interrupted", str(refused.exception))
+        self.assertEqual((self.store.parked["uuid-work"], self.store.live, self.identity()),
+                         ("LIVE-WORK", "PARKED-PERSONAL-REFRESHED", "uuid-work"))
+
+    def test_an_interrupted_swap_to_another_account_is_finished_first(self):
+        self.write_account("uuid-third", {"name": "third", "oauthAccount": {"accountUuid": "uuid-third"}})
+        self.store.parked["uuid-third"] = "PARKED-THIRD"
+        with self.crash_at("_merge_oauth_account"):
+            with self.assertRaises(OSError):
+                claude.rotate(self.paths, self.store, "uuid-work", "uuid-third", None)
+
+        with self.assertRaises(RuntimeError) as refused:
+            self.run_rotate()
+
+        self.assertIn("third", str(refused.exception))
+        self.assertEqual((self.store.parked["uuid-work"], self.store.live, self.identity()),
+                         ("LIVE-WORK", "PARKED-THIRD", "uuid-third"))
+
+    def test_a_marker_left_by_a_finished_swap_does_not_get_in_the_way(self):
+        with mock.patch.object(claude, "_clear_swap_marker", lambda paths: None):
+            self.run_rotate()
+        self.store.live = "PARKED-PERSONAL"
+        with open(self.config_path, "w") as handle:
+            json.dump({"oauthAccount": {"accountUuid": "uuid-personal"}}, handle)
+
+        claude.rotate(self.paths, self.store, "uuid-personal", "uuid-work", None)
+
+        self.assertEqual((self.store.live, self.identity()), ("LIVE-WORK", "uuid-work"))
+
     def test_it_records_what_the_outgoing_account_had_left(self):
         spent = [limit(group="session", remaining=3)]
 
