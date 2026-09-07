@@ -4,29 +4,30 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.3.0 - 2026-09-07
 
 ### Added
 
+- *grazr* reads usage from Claude's status line. After every message Claude
+  hands that command the session's five-hour and weekly usage. *grazr* sits in
+  the command, shows your own status line unchanged, keeps the reading, and
+  swaps within one message when a threshold is crossed. The swap runs in a
+  separate process, so Claude cancelling the status line for the next update
+  cannot leave it half done. Before this, *grazr* read a cache that could sit
+  still for an hour while a window drained, which is how panes kept hitting
+  the wall.
+- Enrolling connects the status line. Two actions connect and disconnect it by
+  hand. When a Claude pane starts and the status line is no longer *grazr*'s,
+  a toast says so once.
+- A toast, once per Claude version, when a session that has talked to the API
+  sends no usage in its status line. A Claude release that renames the field
+  is noticed the same day.
+- Every decision goes to `grazr.log` in the state directory, with a timestamp.
 - A sidebar tag. *grazr* publishes the active account to every Claude pane as
   a `$grazr` token, set when Claude starts in a pane and refreshed after every
-  rotation. Herdr shows a token only where your own sidebar row names it, so
-  the README has the row to add. A pane you have scrolled up in is skipped,
-  because repainting a pane's metadata can jump it to the bottom.
-
-- *grazr* now reads usage from Claude's status line. After every message Claude
-  hands its status-line command the session's five-hour and weekly usage, and
-  *grazr* sits in that command: it shows your own status line unchanged and
-  keeps the reading. A swap follows within one message, mid-turn, in a process
-  detached from the status line so Claude cancelling that for the next update
-  cannot leave a swap half done. Enrolling connects the status line; two
-  actions connect and disconnect it by hand, and a pane start warns once when
-  it has been replaced. Before this, *grazr* read Claude's cached usage at turn
-  ends, and that cache could sit unrefreshed while a window drained, which is
-  how panes still hit the wall.
-
-- Every decision is written to `grazr.log` in the state directory with a
-  timestamp, since the status line's own output is the bar.
+  swap. Herdr shows a token only where your own sidebar row names it, so the
+  README has the row to add. A pane you have scrolled up in is skipped, since
+  repainting a pane's metadata can jump it to the bottom.
 
 ### Removed
 
@@ -38,39 +39,36 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- The files *grazr* shares between panes are put in place in one step. A
-  plain write empties a file before it fills it, and they are written on every
-  message with no lock held.
-- The panes are tagged after the rotation lock is let go rather than while it
-  is held. Two Herdr calls per pane, capped at five seconds each, is long
-  enough to stall every other pane's swap, and a tag is worth none of that.
+- A swap no longer signs you out of your MCP servers. Their logins live in the
+  same store as the account credential and belong to no account, so they now
+  stay put while the login around them changes. When carrying them makes the
+  credential too long for the macOS keychain, the swap goes ahead without them.
+- A swap interrupted half way is finished by the next attempt. It no longer
+  parks the arriving credential over the outgoing account's.
+- A swap no longer leaves the account you left behind in Claude's config. Its
+  `/login` API key stayed there and could be spent by the account you moved
+  to, and its plan and model caches described the wrong account until Claude
+  asked again.
+- An `apiKeyHelper`, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` in
+  `settings.json` puts Claude on API-key auth, so a swap under it changes
+  nothing. *grazr* used to report those swaps as done. It now stops and names
+  the setting to unset.
+- A swap says when the account it moved to had a token that expired while it
+  was parked. Claude refreshes one on its next request, but a refresh token
+  already spent elsewhere makes that fail and signs the account out.
+- When no account is above your thresholds, *grazr* says they are low rather
+  than spent. They still serve requests.
+- The panes are tagged after the rotation lock is let go, not while it is held.
+  Two Herdr calls per pane, capped at five seconds each, would stall every
+  other pane's swap.
+- The files *grazr* shares between panes are put in place in one step. A plain
+  write empties a file before it fills it.
 - The keychain is reached at `/usr/bin/security` rather than by name, so a
   `security` planted earlier on `PATH` is never handed a credential.
-- When no account is above your thresholds, *grazr* says they are low rather
-  than spent. They still serve requests, and the old wording read as though
-  the server had cut you off.
-- A swap no longer signs you out of your MCP servers. Claude keeps their
-  logins in the same store as the account credential, and they are minted
-  against each server rather than against an account, so they now stay put
-  while the login around them changes.
-- A rotation now says when the account it moved to had a token that expired
-  while it was parked. Claude refreshes one on its next request, but a
-  refresh token already spent elsewhere makes that fail and signs the account
-  out. The line is the only warning before that happens.
-- An `apiKeyHelper`, `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` in
-  `settings.json` puts Claude on API-key auth, so swapping the saved
-  claude.ai login under it changes nothing. grazr used to report those swaps
-  as though they had worked. It now stops and names the setting to unset.
-- Carrying the MCP logins can make a credential too long for the macOS
-  keychain, which refuses one rather than truncating it. The swap now goes
-  ahead without them instead of failing.
 - A credential the keychain will not hold, and a line in `config.env` that
-  will not parse, now print one line saying so instead of a stack trace.
-- A swap no longer leaves the account you left behind in Claude's config. Its
-  `/login` API key stayed there, and Claude reads that key back as a way to
-  authenticate, so the account you moved to could spend it. Its plan and
-  model caches stayed too, and described the wrong account until Claude asked
-  again.
+  will not parse, print one line saying so instead of a stack trace.
+- An account file that is valid JSON but not shaped like an account is skipped
+  instead of stopping the decision for every account.
 
 ### Internal
 
@@ -78,19 +76,15 @@ Housekeeping, none of which changes what *grazr* does.
 
 - Two modules split out of files that held more than they said. `accounts.py`
   keeps the accounts *grazr* enrolled, which are its own files rather than
-  Claude's, and `atomic.py` keeps the single way a file is put in place. Four
-  copies of that had drifted apart.
+  Claude's, and `atomic.py` keeps the single way a file is put in place.
 - An entry point is handed what it works on instead of building it from the
   environment. A `Runtime` carries the paths, the credential store, the state
-  directory and the config, so a caller can pass a sandbox and a test cannot
-  reach the real keychain by forgetting a variable.
-- What *grazr* last reported and whether its toast appeared travel together,
-  so one reader and one writer know how the two are stored.
-- Two names that did nothing are gone: an identity writer no caller used, and
-  a wrapper that read Claude's config only to drop part of the answer.
+  directory and the config, so a test cannot reach the real keychain by
+  forgetting a variable.
+- Every open situation *grazr* has reported is kept, with whether its toast
+  appeared, so two situations cannot evict each other and toast in turns.
 - A test pins the agreement between the keychain timeout and the lock stale
-  ages. Raising either number alone would let a swap lose a lock mid-write,
-  and only a comment said so.
+  ages. Raising either alone would let a swap lose a lock mid-write.
 
 ## 0.2.0 - 2026-09-04
 

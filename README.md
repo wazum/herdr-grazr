@@ -91,6 +91,13 @@ have. If you later change `statusLine` in `~/.claude/settings.json` by hand,
 action `grazr: connect to Claude's status line` puts it back. The disconnect
 action restores your previous status line.
 
+Upgrading from 0.2? Run that action once, and remove `LIVE_USAGE_BELOW` from
+`config.env`:
+
+```sh
+herdr plugin action invoke wazum.grazr.install
+```
+
 Then list them in the order you want them used:
 
 ```sh
