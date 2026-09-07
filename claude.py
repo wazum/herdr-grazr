@@ -311,7 +311,9 @@ def install_statusline(config_dir, record_path, command):
     recorded = _read_record(record_path)
     if isinstance(current, dict) and current.get("command") == command:
         return "status line already connected"
-    ours_before = recorded and isinstance(current, dict) and current.get("command") == recorded["shim"]
+    # Any grazr shim counts as ours. An upgrade that died between the two writes
+    # leaves the old shim in the settings, and it is not the user's status line.
+    ours_before = recorded and _is_ours(current, recorded)
     previous = recorded["previous"] if ours_before else current
     atomic.write(record_path, json.dumps({"previous": previous, "shim": command}))
     settings["statusLine"] = {
@@ -328,7 +330,7 @@ def uninstall_statusline(config_dir, record_path):
     if recorded is None:
         return "status line was not connected"
     settings = _read_settings(config_dir)
-    if (settings.get("statusLine") or {}).get("command") != recorded["shim"]:
+    if not _is_ours(settings.get("statusLine"), recorded):
         return "status line was not grazr's, left alone"
     if recorded["previous"]:
         settings["statusLine"] = recorded["previous"]
@@ -347,6 +349,13 @@ def statusline_installed(config_dir, record_path):
         return (_read_settings(config_dir).get("statusLine") or {}).get("command") == recorded["shim"]
     except RuntimeError:
         return False
+
+
+def _is_ours(entry, recorded):
+    command = entry.get("command", "") if isinstance(entry, dict) else ""
+    return command == recorded["shim"] or (
+        "grazr.py" in command and command.rstrip().endswith("statusline")
+    )
 
 
 def _read_record(record_path):

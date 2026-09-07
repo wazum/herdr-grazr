@@ -2626,6 +2626,21 @@ class StatuslineInstallTest(unittest.TestCase):
             ("SHIM-MOVED", "status line connected"),
         )
 
+    def test_an_upgrade_that_died_writing_settings_keeps_the_original(self):
+        """The record is written before the settings. A retry must not take
+        the old shim still in the settings for the user's own status line."""
+        self.write_settings({"statusLine": {"type": "command", "command": "old-bar"}})
+        claude.install_statusline(self.directory, self.record, "python3 /a/grazr.py statusline")
+        with mock.patch.object(claude, "_write_settings", side_effect=OSError("died")):
+            with self.assertRaises(OSError):
+                claude.install_statusline(self.directory, self.record, "python3 /b/grazr.py statusline")
+
+        claude.install_statusline(self.directory, self.record, "python3 /b/grazr.py statusline")
+        line = claude.uninstall_statusline(self.directory, self.record)
+
+        self.assertEqual((self.read_settings()["statusLine"]["command"], line),
+                         ("old-bar", "status line disconnected"))
+
     def test_installing_the_same_shim_twice_changes_nothing(self):
         claude.install_statusline(self.directory, self.record, "SHIM")
 
