@@ -55,6 +55,9 @@ def load(paths, names):
             stored = read(paths, identifier)
         except (OSError, ValueError):
             continue
+        # Valid JSON is not yet a valid account.
+        if not isinstance(stored, dict) or not isinstance(stored.get("name", identifier), str):
+            continue
         by_name[stored.get("name", identifier)] = core.Account(
             id=identifier,
             name=stored.get("name", identifier),
@@ -110,7 +113,7 @@ def snapshot_from_json(stored):
     if stored is None:
         return None
     try:
-        return [
+        limits = [
             core.Limit(
                 kind=entry["kind"],
                 scope=entry["scope"],
@@ -120,5 +123,16 @@ def snapshot_from_json(stored):
             )
             for entry in stored
         ]
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, AttributeError):
         return None
+    # The decision compares these, and a string or a bool would compare wrong
+    # rather than raise.
+    if all(
+        isinstance(entry.kind, str)
+        and isinstance(entry.group, str)
+        and isinstance(entry.remaining, (int, float))
+        and not isinstance(entry.remaining, bool)
+        for entry in limits
+    ):
+        return limits
+    return None

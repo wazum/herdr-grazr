@@ -1324,6 +1324,25 @@ class AccountLoadTest(unittest.TestCase):
         self.assertEqual([account.name for account in enrolled], ["personal", "work"])
         self.assertEqual(enrolled[0].id, "uuid-personal")
 
+    def test_a_record_of_the_wrong_shape_is_skipped_not_fatal(self):
+        """Valid JSON is not a valid account. One odd file must not take the
+        decision down for every account."""
+        self.write_account("uuid-work", {"name": "work"})
+        self.write_account("uuid-list", [])
+        self.write_account("uuid-named-oddly", {"name": ["not", "a", "string"]})
+
+        self.assertEqual([entry.name for entry in accounts.load(self.paths, [])], ["work"])
+
+    def test_a_snapshot_with_values_of_the_wrong_type_reads_as_never_parked(self):
+        for snapshot in (
+            [{"kind": "session", "scope": None, "group": "session", "remaining": "12", "resets_at": None}],
+            [{"kind": "session", "scope": None, "group": "session", "remaining": True, "resets_at": None}],
+            [{"kind": "session", "scope": None, "group": 7, "remaining": 12, "resets_at": None}],
+            [{"kind": "session", "scope": None, "group": "session", "remaining": 12, "resets_at": 5}],
+        ):
+            with self.subTest(snapshot=snapshot):
+                self.assertIsNone(accounts.snapshot_from_json(snapshot))
+
     def test_one_corrupt_account_file_does_not_hide_the_others(self):
         """The store is read whole on the rotate path, so a single bad file
         would otherwise stop rotation for every account."""
