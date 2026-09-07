@@ -2324,6 +2324,7 @@ class StatuslineTest(EnrolledPairFixture):
         (argv,), keywords = started[0]
         self.assertEqual(argv[-1], "decide")
         self.assertTrue(keywords["start_new_session"])
+        self.assertTrue(keywords["stderr"].name.startswith(self.state_dir), keywords["stderr"].name)
         self.assertEqual(self.rotations, [])
 
     def test_a_healthy_reading_is_recorded_and_nothing_else(self):

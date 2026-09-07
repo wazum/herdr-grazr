@@ -447,7 +447,7 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
         limits = core.merged(_latest_reading(paths, active), limits)
         accounts.record_snapshot(paths, active, limits)
     if core.needs_rotation(limits, datetime.now(timezone.utc), config.thresholds):
-        (detach or _detach_decide)()
+        (detach or (lambda: _detach_decide(state_dir)))()
     return 0
 
 
@@ -468,8 +468,8 @@ def _warn_unreadable(state_dir, payload):
         _log(state_dir, datetime.now(timezone.utc), line)
 
 
-def _detach_decide():
-    with open(os.path.join(_paths()[2], LOG), "a") as log:
+def _detach_decide(state_dir):
+    with open(os.path.join(state_dir, LOG), "a") as log:
         subprocess.Popen(
             [sys.executable, os.path.abspath(__file__), "decide"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
