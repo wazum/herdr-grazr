@@ -704,7 +704,10 @@ def swap(runtime=None):
                 "nothing to swap to, earliest reset %s" % (soonest or "unknown")
             )
         decision = ("rotate", next_id)
-        line = act_on(decision, runtime, active, limits, enrolled, now)
+        try:
+            line = act_on(decision, runtime, active, limits, enrolled, now)
+        except RuntimeError as refusal:
+            return _refuse_swap(str(refusal))
         print(line)
 
     if _moved(decision, config.dry_run):

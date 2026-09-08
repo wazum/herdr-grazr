@@ -14,6 +14,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   limits to report, so the toast came back seconds after every swap.
 - A swap on demand is written to `grazr.log` like an automatic one. Only
   Herdr's plugin log had it.
+- A swap on demand that one of Claude's locks refuses says so on screen and
+  in a toast, the way having nowhere to go does. The refusal reached only the
+  plugin log.
 
 ## 0.3.0 - 2026-09-07
 

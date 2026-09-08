@@ -2140,9 +2140,16 @@ class EnrolledPairFixture(unittest.TestCase):
                 json.dump({"name": name, "oauthAccount": {"accountUuid": identifier}}, f)
         self.write_config('ACCOUNTS="work personal"\n')
         self.rotations = []
+        self.refusal = None
         self.notices = []
         self.tags = []
         self.lock_free_while_tagging = []
+
+    def record_rotation(self, *arguments):
+        """Stands in for claude.rotate, which refuses by raising."""
+        if self.refusal:
+            raise RuntimeError(self.refusal)
+        self.rotations.append(arguments)
 
     def record_tag(self, name):
         """Notes whether the rotation lock was free while panes were tagged."""
@@ -2181,7 +2188,7 @@ class EnrolledPairFixture(unittest.TestCase):
         printed = io.StringIO()
 
         with mock.patch.dict(os.environ, environment, clear=True), mock.patch.object(
-            claude, "rotate", lambda *arguments: self.rotations.append(arguments)
+            claude, "rotate", self.record_rotation
         ), mock.patch.object(
             grazr, "notify", lambda title, body: self.notices.append((title, body)) or True
         ), mock.patch.object(
@@ -2287,6 +2294,18 @@ class SwapTest(EnrolledPairFixture):
         self.assertIn("nothing to swap to", printed)
         self.assertEqual(len(self.notices), 1)
         self.assertIn("nothing to swap to", self.notices[0][1])
+
+    def test_a_refusal_mid_swap_is_shown_like_having_nowhere_to_go(self):
+        """A busy Claude lock left the swap as a bare line on stdout, which
+        only the plugin log sees, so the key looked as if it did nothing."""
+        self.refusal = "Claude is writing its config; not swapping now"
+
+        code, printed = self.invoke(grazr.swap)
+
+        self.assertEqual(code, 1)
+        self.assertIn("not swapping now", printed)
+        self.assertEqual(len(self.notices), 1)
+        self.assertIn("not swapping now", self.notices[0][1])
 
     def test_nowhere_to_go_names_the_earliest_reset(self):
         spent_until = (datetime.now(timezone.utc) + timedelta(hours=2)).replace(microsecond=0)
