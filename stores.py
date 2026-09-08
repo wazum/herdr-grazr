@@ -197,8 +197,8 @@ class KeychainStore:
         size = len(line.encode())
         if size > MAX_SECURITY_LINE:
             raise ValueError(
-                "credential for %s needs a %d byte security line, over the %d byte limit; "
-                "installing it would truncate and destroy the item"
+                "credential for %s needs a %d byte security line, over the %d byte limit. "
+                "Installing it would truncate and destroy the item"
                 % (service, size, MAX_SECURITY_LINE)
             )
         self._run_security(line)

@@ -232,7 +232,7 @@ because repainting one can jump it to the bottom.
 - Act on a reading from an account it has left. A session keeps reporting the
   old account until its next request, and *grazr* tells those readings apart by
   the window's reset time and drops them.
-- Touch a pane that already hit the wall. *grazr* swaps before that; if a pane
+- Touch a pane that already hit the wall. *grazr* swaps before that. If a pane
   does show a limit, press `Esc` and send again, and it goes out on the new
   account.
 - Write a credential it cannot write whole. macOS `security` quietly truncates

@@ -18,6 +18,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in a toast, the way having nowhere to go does. The refusal reached only the
   plugin log.
 
+### Changed
+
+- Messages are written as sentences, without semicolons.
+
 ## 0.3.0 - 2026-09-07
 
 ### Added

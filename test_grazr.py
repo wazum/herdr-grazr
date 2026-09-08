@@ -1956,13 +1956,13 @@ class ActOnDecisionTest(unittest.TestCase):
 
     def test_the_line_carries_what_the_swap_reported(self):
         """Only the swap sees the arriving credential."""
-        with mock.patch.object(claude, "rotate", lambda *arguments: "; its token had expired"), \
+        with mock.patch.object(claude, "rotate", lambda *arguments: ". Its token had expired"), \
                 mock.patch.object(grazr, "notify", self.record_notice):
             line = grazr.act_on(
                 ("rotate", "uuid-personal"), self.runtime(), "uuid-work", [], [], NOW
             )
 
-        self.assertIn("its token had expired", line)
+        self.assertIn("Its token had expired", line)
 
     def test_staying_is_silent(self):
         self.act("stay")
@@ -1996,7 +1996,7 @@ class ActOnDecisionTest(unittest.TestCase):
     def test_having_nothing_enrolled_says_so_and_points_at_the_fix(self):
         line = self.act("unenrolled")
 
-        self.assertIn("enrol", line)
+        self.assertIn("Enrol", line)
         self.assertNotIn("spent", line)
         self.assertEqual(self.rotations, [])
 
@@ -2298,7 +2298,7 @@ class SwapTest(EnrolledPairFixture):
     def test_a_refusal_mid_swap_is_shown_like_having_nowhere_to_go(self):
         """A busy Claude lock left the swap as a bare line on stdout, which
         only the plugin log sees, so the key looked as if it did nothing."""
-        self.refusal = "Claude is writing its config; not swapping now"
+        self.refusal = "Claude is writing its config, so grazr is not swapping now"
 
         code, printed = self.invoke(grazr.swap)
 

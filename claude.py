@@ -93,7 +93,7 @@ def _oauth_refresh_lock(config_dir):
     return _proper_lock(
         os.path.join(config_dir, ".oauth_refresh.lock"),
         OAUTH_LOCK_STALE_MS,
-        "Claude is refreshing its token; not swapping now",
+        "Claude is refreshing its token, so grazr is not swapping now",
     )
 
 
@@ -151,7 +151,7 @@ def enrol(paths, store, name, source_config_dir=None):
         store.read_isolated(source_config_dir) if source_config_dir else store.read_live()
     )
     if blob is None:
-        raise RuntimeError("no login found; run `claude auth login` first")
+        raise RuntimeError("no login found. Run `claude auth login` first")
 
     with open(config_path) as handle:
         identity = (json.load(handle).get("oauthAccount") or {})
@@ -199,13 +199,13 @@ def rotate(paths, store, active_id, next_id, snapshot):
     if override:
         raise RuntimeError(
             "%s in settings.json puts Claude on API-key auth, so swapping the "
-            "saved claude.ai login would change nothing; unset it to let grazr "
+            "saved claude.ai login would change nothing. Unset it to let grazr "
             "rotate" % override
         )
 
     arriving = store.read_parked(next_id)
     if arriving is None:
-        raise RuntimeError("no parked credential for %s; enrol it again" % next_id)
+        raise RuntimeError("no parked credential for %s. Enrol it again" % next_id)
     identity = accounts.read(paths, next_id)["oauthAccount"]
 
     # Both locks before the first write. The identity write comes last, but its
@@ -221,7 +221,7 @@ def rotate(paths, store, active_id, next_id, snapshot):
 
         leaving = store.read_live()
         if leaving is None:
-            raise RuntimeError("no live credential to park; refusing to swap")
+            raise RuntimeError("there is no live credential to park, so grazr is not swapping")
         renew()
         pending = _pending_swap(paths, store, active_id, leaving)
         if pending is None:
@@ -243,7 +243,7 @@ def rotate(paths, store, active_id, next_id, snapshot):
             )
             _clear_swap_marker(paths)
             raise RuntimeError(
-                "finished a swap to %s that had been interrupted; try again" % pending["next"]
+                "finished a swap to %s that had been interrupted. Try again" % pending["next"]
             )
         _merge_oauth_account(paths.config_path, identity)
         _clear_swap_marker(paths)
@@ -269,7 +269,7 @@ def _expired_note(blob):
     # Claude writes this as epoch milliseconds.
     if expires_at > time.time() * 1000:
         return None
-    return "; its token had expired, so Claude has to refresh it"
+    return ". Its token had expired while parked, so Claude has to refresh it"
 
 
 def settings_auth_override(config_dir):
@@ -407,7 +407,7 @@ def _pending_swap(paths, store, active_id, live):
         return None
     raise RuntimeError(
         "a swap from %s to %s was interrupted and the live credential matches "
-        "neither account; not touching it. Log in again with `claude auth login`"
+        "neither account, so grazr leaves it alone. Log in again with `claude auth login`"
         % (active_id, pending["next"])
     )
 
@@ -480,7 +480,7 @@ def _config_lock(config_path):
     return _proper_lock(
         config_path + ".lock",
         CONFIG_LOCK_STALE_MS,
-        "Claude is writing its config; not swapping now",
+        "Claude is writing its config, so grazr is not swapping now",
     )
 
 

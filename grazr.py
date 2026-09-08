@@ -163,7 +163,7 @@ def act_on(decision, runtime, active_id, limits, accounts=(), now=None):
         return _name_of(accounts, identifier)
 
     if decision == "unenrolled":
-        line = "nothing to rotate to; enrol a second account and list it in ACCOUNTS"
+        line = "nothing to rotate to. Enrol a second account and list it in ACCOUNTS"
         announced = _announce_once(
             state_dir, "unenrolled", "grazr: no second account", line
         )
@@ -651,7 +651,7 @@ def tag(runtime=None):
     else:
         tag_all(named)
     if not claude.statusline_installed(paths.config_dir, _record_path(state_dir)):
-        line = "the status line is not grazr's, so grazr sees no usage; run the connect action"
+        line = "the status line is not grazr's, so grazr sees no usage. Run the connect action"
         if _announce_once(state_dir, "statusline-missing", "grazr: status line not connected", line):
             print(line)
     return 0
@@ -745,12 +745,12 @@ def status(runtime=None):
 
     print("\nactive account headroom: %s" % _describe(_latest_reading(paths, active)))
     if not claude.statusline_installed(paths.config_dir, _record_path(state_dir)):
-        print("  the status line is not grazr's, so grazr sees no usage; run the connect action")
+        print("  the status line is not grazr's, so grazr sees no usage. Run the connect action")
     if active and not any(account.id == active for account in enrolled):
         # Enrolled but left out of ACCOUNTS is the likelier mistake, and calling
         # that "not enrolled" sends you off to enrol it a second time.
         enrolled = any(account.id == active for account in accounts.load(paths, []))
-        print("  this login is %s; grazr can rotate away but not back"
+        print("  this login is %s, so grazr can rotate away but not back"
               % ("enrolled but missing from ACCOUNTS" if enrolled else "not enrolled"))
 
     last = _last_decision(state_dir)
@@ -802,7 +802,7 @@ def enrol(runtime=None):
     # browser step or the name prompt would otherwise strand a real credential
     # in the keychain under a service name nothing tracks.
     try:
-        print("\nlogging in with an isolated config dir; your current login is untouched.\n")
+        print("\nlogging in with an isolated config dir, so your current login is untouched.\n")
         try:
             login = subprocess.run(
                 ["claude", "auth", "login"], env=dict(os.environ, CLAUDE_CONFIG_DIR=source)
