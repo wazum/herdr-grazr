@@ -2459,6 +2459,20 @@ class StatuslineTest(EnrolledPairFixture):
         self.assertEqual(self.notices[0][0], "grazr: cannot read Claude's usage")
         self.assertIn("9.9.9", self.notices[0][1])
 
+    def test_a_rotation_does_not_bring_the_warning_back(self):
+        """A rotation clears the situations it resolves. An idle pane that sends
+        no limits is not one of them, and it re-runs the status line every
+        minute, so it toasted the warning again seconds after every swap."""
+        spoken = json.dumps({"session_id": "s", "version": "9.9.9",
+                             "context_window": {"total_input_tokens": 512}})
+
+        self.run_statusline(spoken)
+        self.invoke(grazr.swap)
+        self.run_statusline(spoken)
+
+        titles = [title for title, _ in self.notices]
+        self.assertEqual(titles.count("grazr: cannot read Claude's usage"), 1)
+
     def test_a_session_that_has_not_reached_the_api_yet_is_not_a_problem(self):
         fresh = {"session_id": "s", "version": "9.9.9",
                  "context_window": {"total_input_tokens": 0}}

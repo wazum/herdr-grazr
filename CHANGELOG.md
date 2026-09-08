@@ -4,6 +4,15 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- A rotation no longer brings back the warning that a Claude session sends no
+  usage. Every rotation wiped the record of having shown it, and a pane
+  resumed days ago and idle since re-runs the status line every minute with no
+  limits to report, so the toast came back seconds after every swap.
+
 ## 0.3.0 - 2026-09-07
 
 ### Added

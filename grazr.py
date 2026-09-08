@@ -208,9 +208,14 @@ def act_on(decision, runtime, active_id, limits, accounts=(), now=None):
         "grazr: now on %s" % name_of(next_id),
         "Remote Control needs /remote-control per pane",
     )
-    # A rotation resolves every open situation. Leaving them on record would
-    # silence each of them the next time it is real.
-    _write_notices(state_dir, {line: shown})
+    # A rotation resolves every open situation but one: a pane that sends no
+    # limits is as blind on the new account. Leaving the others on record
+    # would silence each of them the next time it is real.
+    notices = {
+        key: seen for key, seen in _read_notices(state_dir).items() if key.startswith("unreadable:")
+    }
+    notices[line] = shown
+    _write_notices(state_dir, notices)
     return line
 
 
