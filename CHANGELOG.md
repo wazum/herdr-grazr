@@ -4,18 +4,18 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.3.1 - 2026-09-08
 
 ### Fixed
 
-- A rotation no longer brings back the warning that a Claude session sends no
-  usage. Every rotation wiped the record of having shown it, and a pane
-  resumed days ago and idle since re-runs the status line every minute with no
-  limits to report, so the toast came back seconds after every swap.
-- A swap on demand is written to `grazr.log` like an automatic one. Only
-  Herdr's plugin log had it.
-- A swap on demand that one of Claude's locks refuses says so on screen and
-  in a toast, the way having nowhere to go does. The refusal reached only the
+- A rotation no longer brings back the toast that says a Claude session sends
+  no usage. Each rotation wiped the record of having shown it, and a pane
+  resumed days ago and idle since re-runs the status line every minute with
+  no limits to report, so the toast was back within a minute of every swap.
+- A swap on demand goes to `grazr.log` like an automatic one. Only Herdr's
+  plugin log had it.
+- A swap on demand that one of Claude's locks refuses says so on screen and in
+  a toast, the way having nowhere to go does. The refusal reached only the
   plugin log.
 
 ### Changed
