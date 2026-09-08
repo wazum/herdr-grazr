@@ -20,7 +20,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- Messages are written as sentences, without semicolons.
+- Messages are written as sentences, with a capital letter first and no
+  semicolons.
 
 ## 0.3.0 - 2026-09-07
 

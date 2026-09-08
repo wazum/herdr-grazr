@@ -163,7 +163,7 @@ def act_on(decision, runtime, active_id, limits, accounts=(), now=None):
         return _name_of(accounts, identifier)
 
     if decision == "unenrolled":
-        line = "nothing to rotate to. Enrol a second account and list it in ACCOUNTS"
+        line = "Nothing to rotate to. Enrol a second account and list it in ACCOUNTS"
         announced = _announce_once(
             state_dir, "unenrolled", "grazr: no second account", line
         )
@@ -178,7 +178,7 @@ def act_on(decision, runtime, active_id, limits, accounts=(), now=None):
         # Below your thresholds, not cut off by the server: these accounts still
         # serve requests, so saying they are spent would stop you working for
         # no reason.
-        line = "every account is below your thresholds, earliest reset %s" % (
+        line = "Every account is below your thresholds, earliest reset %s" % (
             soonest or "unknown"
         )
         announced = _announce_once(
@@ -203,14 +203,14 @@ def act_on(decision, runtime, active_id, limits, accounts=(), now=None):
         return "DRY_RUN: would rotate %s -> %s" % (name_of(active_id), name_of(next_id))
 
     note = claude.rotate(paths, store, active_id, next_id, limits)
-    line = "rotated %s -> %s%s" % (name_of(active_id), name_of(next_id), note or "")
+    line = "Rotated %s -> %s%s" % (name_of(active_id), name_of(next_id), note or "")
     shown = notify(
         "grazr: now on %s" % name_of(next_id),
         "Remote Control needs /remote-control per pane",
     )
-    # A rotation resolves every open situation but one: a pane that sends no
-    # limits is as blind on the new account. Leaving the others on record
-    # would silence each of them the next time it is real.
+    # A rotation resolves every open situation, so a record left behind would
+    # silence it the next time it is real. A pane that sends no limits stays
+    # blind on the new account, so that record is kept.
     notices = {
         key: seen for key, seen in _read_notices(state_dir).items() if key.startswith("unreadable:")
     }
@@ -326,7 +326,7 @@ def load_config(path):
     if len(set(accounts)) != len(accounts):
         raise ValueError("ACCOUNTS lists the same account twice: %s" % " ".join(accounts))
     if settings:
-        raise ValueError("unknown setting(s): %s" % ", ".join(sorted(settings)))
+        raise ValueError("Unknown setting(s): %s" % ", ".join(sorted(settings)))
 
     return Config(thresholds=thresholds, accounts=accounts, enabled=flags[0], dry_run=flags[1])
 
@@ -507,7 +507,7 @@ def decide(runtime=None):
             line = act_on(decision, runtime, active, limits, enrolled, now)
         except RuntimeError as refusal:
             # A busy Claude lock. The next message brings the next try.
-            line = "not rotating: %s" % refusal
+            line = "Not rotating: %s" % refusal
             decision = "stay"
 
     # Two herdr calls per pane, capped at five seconds each, is far too long to
@@ -651,7 +651,7 @@ def tag(runtime=None):
     else:
         tag_all(named)
     if not claude.statusline_installed(paths.config_dir, _record_path(state_dir)):
-        line = "the status line is not grazr's, so grazr sees no usage. Run the connect action"
+        line = "The status line is not grazr's, so grazr sees no usage. Run the connect action"
         if _announce_once(state_dir, "statusline-missing", "grazr: status line not connected", line):
             print(line)
     return 0
@@ -691,17 +691,17 @@ def swap(runtime=None):
     now = datetime.now(timezone.utc)
     with _rotation_lock(state_dir) as acquired:
         if not acquired:
-            return _refuse_swap("busy rotating already, try again in a moment")
+            return _refuse_swap("Busy rotating already, try again in a moment")
         active = claude.active_account(paths)
         if active is None:
-            return _refuse_swap("not logged in, nothing to swap from")
+            return _refuse_swap("Not logged in, nothing to swap from")
         limits = _latest_reading(paths, active)
         enrolled = accounts.load(paths, config.accounts)
         next_id = core.next_account(active, enrolled, now, config.thresholds)
         if next_id is None:
             soonest = _soonest_reset(now, *(entry.snapshot for entry in enrolled))
             return _refuse_swap(
-                "nothing to swap to, earliest reset %s" % (soonest or "unknown")
+                "Nothing to swap to, earliest reset %s" % (soonest or "unknown")
             )
         decision = ("rotate", next_id)
         try:
@@ -745,12 +745,12 @@ def status(runtime=None):
 
     print("\nactive account headroom: %s" % _describe(_latest_reading(paths, active)))
     if not claude.statusline_installed(paths.config_dir, _record_path(state_dir)):
-        print("  the status line is not grazr's, so grazr sees no usage. Run the connect action")
+        print("  The status line is not grazr's, so grazr sees no usage. Run the connect action")
     if active and not any(account.id == active for account in enrolled):
         # Enrolled but left out of ACCOUNTS is the likelier mistake, and calling
         # that "not enrolled" sends you off to enrol it a second time.
         enrolled = any(account.id == active for account in accounts.load(paths, []))
-        print("  this login is %s, so grazr can rotate away but not back"
+        print("  This login is %s, so grazr can rotate away but not back"
               % ("enrolled but missing from ACCOUNTS" if enrolled else "not enrolled"))
 
     last = _last_decision(state_dir)
@@ -779,14 +779,14 @@ def _describe(snapshot):
 
 def enrol(runtime=None):
     # No title here: the pane border already carries it.
-    print("  (s) save the login this machine is using now")
-    print("  (l) log in to another account, without touching the current one")
-    print("  (q) close, or press Esc\n")
+    print("  (s) Save the login this machine is using now")
+    print("  (l) Log in to another account, without touching the current one")
+    print("  (q) Close, or press Esc\n")
     print("choice: ", end="", flush=True)
     choice = read_key()
     print(choice if choice in ("s", "l") else "")
     if choice not in ("s", "l"):
-        print("closed, nothing changed")
+        print("Closed, nothing changed")
         return 0
 
     runtime = runtime or _runtime()
@@ -802,36 +802,36 @@ def enrol(runtime=None):
     # browser step or the name prompt would otherwise strand a real credential
     # in the keychain under a service name nothing tracks.
     try:
-        print("\nlogging in with an isolated config dir, so your current login is untouched.\n")
+        print("\nLogging in with an isolated config dir, so your current login is untouched.\n")
         try:
             login = subprocess.run(
                 ["claude", "auth", "login"], env=dict(os.environ, CLAUDE_CONFIG_DIR=source)
             )
         except FileNotFoundError:
-            print("claude is not on this pane's PATH, so it cannot log you in")
+            print("There is no claude on this pane's PATH, so it cannot log you in")
             return 1
         if login.returncode != 0:
-            print("login did not complete")
+            print("Login did not complete")
             return 1
         return _enrol_from(runtime, source)
     finally:
         if not claude.discard_isolated_login(runtime.store, source):
-            print("warning: could not remove the throwaway login from the keychain")
+            print("Warning: could not remove the throwaway login from the keychain")
 
 
 def _enrol_from(runtime, source):
     paths, store, state_dir, _ = runtime
     name = input("account name: ").strip()
     if not name:
-        print("a name is required")
+        print("A name is required")
         return 1
     try:
         identifier = claude.enrol(paths, store, name, source)
     except RuntimeError as error:
-        print("could not enrol: %s" % error)
+        print("Could not enrol: %s" % error)
         return 1
-    print("\nenrolled %s as %s" % (name, identifier))
-    print('add it to ACCOUNTS in %s' % _config_path())
+    print("\nEnrolled %s as %s" % (name, identifier))
+    print('Add it to ACCOUNTS in %s' % _config_path())
     print(claude.install_statusline(paths.config_dir, _record_path(state_dir), _shim_command(state_dir)))
     return 0
 

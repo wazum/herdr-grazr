@@ -34,7 +34,7 @@ def account_id(value):
             return canonical
     except (AttributeError, TypeError, ValueError):
         pass
-    raise RuntimeError("that login has no usable account identity: %r" % (value,))
+    raise RuntimeError("That login has no usable account identity: %r" % (value,))
 
 
 def has_parked_credential(store, identifier):

@@ -2146,7 +2146,6 @@ class EnrolledPairFixture(unittest.TestCase):
         self.lock_free_while_tagging = []
 
     def record_rotation(self, *arguments):
-        """Stands in for claude.rotate, which refuses by raising."""
         if self.refusal:
             raise RuntimeError(self.refusal)
         self.rotations.append(arguments)
@@ -2255,16 +2254,15 @@ class SwapTest(EnrolledPairFixture):
 
         self.assertEqual(code, 0)
         self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
-        self.assertIn("rotated work -> personal", printed)
+        self.assertIn("Rotated work -> personal", printed)
 
     def test_the_swap_is_logged_like_an_automatic_one(self):
-        """The toast is gone in three seconds and Herdr's plugin log keeps a
-        handful of entries, so a swap you asked for was the one kind that
-        never reached grazr.log."""
+        """Herdr's plugin log keeps a handful of entries, and it was the only
+        record of a swap you asked for."""
         self.invoke(grazr.swap)
 
         with open(os.path.join(self.state_dir, "grazr.log")) as handle:
-            self.assertIn("rotated work -> personal", handle.read())
+            self.assertIn("Rotated work -> personal", handle.read())
 
     def test_honours_dry_run(self):
         self.write_config('ACCOUNTS="work personal"\nDRY_RUN=1\n')
@@ -2291,13 +2289,13 @@ class SwapTest(EnrolledPairFixture):
 
         self.assertEqual(code, 1)
         self.assertEqual(self.rotations, [])
-        self.assertIn("nothing to swap to", printed)
+        self.assertIn("Nothing to swap to", printed)
         self.assertEqual(len(self.notices), 1)
-        self.assertIn("nothing to swap to", self.notices[0][1])
+        self.assertIn("Nothing to swap to", self.notices[0][1])
 
     def test_a_refusal_mid_swap_is_shown_like_having_nowhere_to_go(self):
-        """A busy Claude lock left the swap as a bare line on stdout, which
-        only the plugin log sees, so the key looked as if it did nothing."""
+        """A refusal raised mid-swap reached only the plugin log, so the key
+        looked as if it did nothing."""
         self.refusal = "Claude is writing its config, so grazr is not swapping now"
 
         code, printed = self.invoke(grazr.swap)
@@ -2335,7 +2333,7 @@ class SwapTest(EnrolledPairFixture):
 
         self.assertEqual(code, 1)
         self.assertEqual(self.rotations, [])
-        self.assertIn("busy", printed)
+        self.assertIn("Busy", printed)
 
 
 class StatuslineTest(EnrolledPairFixture):
@@ -2453,7 +2451,7 @@ class StatuslineTest(EnrolledPairFixture):
         self.run_statusline(self.payload(used=90))
 
         with open(os.path.join(self.state_dir, "grazr.log")) as handle:
-            self.assertIn("rotated work -> personal", handle.read())
+            self.assertIn("Rotated work -> personal", handle.read())
 
     def test_the_panes_are_tagged_after_the_lock_is_let_go(self):
         self.run_statusline(self.payload(used=90))
@@ -2488,9 +2486,9 @@ class StatuslineTest(EnrolledPairFixture):
         self.assertIn("9.9.9", self.notices[0][1])
 
     def test_a_rotation_does_not_bring_the_warning_back(self):
-        """A rotation clears the situations it resolves. An idle pane that sends
-        no limits is not one of them, and it re-runs the status line every
-        minute, so it toasted the warning again seconds after every swap."""
+        """An idle pane that sends no limits re-runs the status line every
+        minute, so a rotation that wiped its record brought the toast back
+        seconds after every swap."""
         spoken = json.dumps({"session_id": "s", "version": "9.9.9",
                              "context_window": {"total_input_tokens": 512}})
 
@@ -2665,7 +2663,7 @@ class StatuslineInstallTest(unittest.TestCase):
         })
         with open(self.record) as handle:
             self.assertEqual(json.load(handle), {"previous": old, "shim": "SHIM"})
-        self.assertEqual(line, "status line connected")
+        self.assertEqual(line, "Status line connected")
 
     def test_a_setup_without_a_status_line_gets_one_that_refreshes_while_idle(self):
         claude.install_statusline(self.directory, self.record, "SHIM")
@@ -2685,7 +2683,7 @@ class StatuslineInstallTest(unittest.TestCase):
             self.assertEqual(json.load(handle)["previous"]["command"], "old-bar")
         self.assertEqual(
             (self.read_settings()["statusLine"]["command"], line),
-            ("SHIM-MOVED", "status line connected"),
+            ("SHIM-MOVED", "Status line connected"),
         )
 
     def test_an_upgrade_that_died_writing_settings_keeps_the_original(self):
@@ -2701,14 +2699,14 @@ class StatuslineInstallTest(unittest.TestCase):
         line = claude.uninstall_statusline(self.directory, self.record)
 
         self.assertEqual((self.read_settings()["statusLine"]["command"], line),
-                         ("old-bar", "status line disconnected"))
+                         ("old-bar", "Status line disconnected"))
 
     def test_installing_the_same_shim_twice_changes_nothing(self):
         claude.install_statusline(self.directory, self.record, "SHIM")
 
         self.assertEqual(
             claude.install_statusline(self.directory, self.record, "SHIM"),
-            "status line already connected",
+            "Status line already connected",
         )
 
     def test_uninstall_restores_what_was_there(self):
@@ -2718,7 +2716,7 @@ class StatuslineInstallTest(unittest.TestCase):
 
         line = claude.uninstall_statusline(self.directory, self.record)
 
-        self.assertEqual((self.read_settings()["statusLine"], line), (old, "status line disconnected"))
+        self.assertEqual((self.read_settings()["statusLine"], line), (old, "Status line disconnected"))
         self.assertFalse(os.path.exists(self.record))
 
     def test_uninstall_removes_an_entry_that_was_not_there_before(self):
@@ -2737,7 +2735,7 @@ class StatuslineInstallTest(unittest.TestCase):
 
         self.assertEqual(
             (self.read_settings()["statusLine"]["command"], line),
-            ("mine", "status line was not grazr's, left alone"),
+            ("mine", "Status line was not grazr's, left alone"),
         )
 
     def test_it_knows_whether_it_is_connected(self):

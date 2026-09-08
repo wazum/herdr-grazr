@@ -172,12 +172,12 @@ class KeychainStore:
                 timeout=SECURITY_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired:
-            raise RuntimeError("the keychain did not answer within %ds" % SECURITY_TIMEOUT_SECONDS)
+            raise RuntimeError("The keychain did not answer within %ds" % SECURITY_TIMEOUT_SECONDS)
         if completed.returncode == ITEM_NOT_FOUND:
             return None
         if completed.returncode != 0:
             raise RuntimeError(
-                "the keychain refused to read the credential: %s"
+                "The keychain refused to read the credential: %s"
                 % (_scrubbed(completed.stderr) or completed.returncode)
             )
         stored = completed.stdout.strip()
@@ -197,7 +197,7 @@ class KeychainStore:
         size = len(line.encode())
         if size > MAX_SECURITY_LINE:
             raise ValueError(
-                "credential for %s needs a %d byte security line, over the %d byte limit. "
+                "The credential for %s needs a %d byte security line, over the %d byte limit. "
                 "Installing it would truncate and destroy the item"
                 % (service, size, MAX_SECURITY_LINE)
             )
@@ -214,9 +214,9 @@ class KeychainStore:
                 timeout=SECURITY_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired:
-            raise RuntimeError("the keychain did not answer within %ds" % SECURITY_TIMEOUT_SECONDS)
+            raise RuntimeError("The keychain did not answer within %ds" % SECURITY_TIMEOUT_SECONDS)
         if completed.returncode != 0:
             raise RuntimeError(
-                "security refused the command: %s" % _scrubbed(completed.stderr)
+                "The security tool refused the command: %s" % _scrubbed(completed.stderr)
             )
         return completed.stdout

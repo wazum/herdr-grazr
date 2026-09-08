@@ -151,7 +151,7 @@ def enrol(paths, store, name, source_config_dir=None):
         store.read_isolated(source_config_dir) if source_config_dir else store.read_live()
     )
     if blob is None:
-        raise RuntimeError("no login found. Run `claude auth login` first")
+        raise RuntimeError("No login found. Run `claude auth login` first")
 
     with open(config_path) as handle:
         identity = (json.load(handle).get("oauthAccount") or {})
@@ -160,7 +160,7 @@ def enrol(paths, store, name, source_config_dir=None):
     # Accounts are looked up by name, so a duplicate hides one of them for good.
     for existing in accounts.load(paths, []):
         if existing.name == name and existing.id != account_id:
-            raise RuntimeError("the name %r is already used by another account" % name)
+            raise RuntimeError("The name %r is already used by another account" % name)
 
     store.write_parked(account_id, blob)
     accounts.write(
@@ -205,7 +205,7 @@ def rotate(paths, store, active_id, next_id, snapshot):
 
     arriving = store.read_parked(next_id)
     if arriving is None:
-        raise RuntimeError("no parked credential for %s. Enrol it again" % next_id)
+        raise RuntimeError("No parked credential for %s. Enrol it again" % next_id)
     identity = accounts.read(paths, next_id)["oauthAccount"]
 
     # Both locks before the first write. The identity write comes last, but its
@@ -221,7 +221,7 @@ def rotate(paths, store, active_id, next_id, snapshot):
 
         leaving = store.read_live()
         if leaving is None:
-            raise RuntimeError("there is no live credential to park, so grazr is not swapping")
+            raise RuntimeError("There is no live credential to park, so grazr is not swapping")
         renew()
         pending = _pending_swap(paths, store, active_id, leaving)
         if pending is None:
@@ -243,7 +243,7 @@ def rotate(paths, store, active_id, next_id, snapshot):
             )
             _clear_swap_marker(paths)
             raise RuntimeError(
-                "finished a swap to %s that had been interrupted. Try again" % pending["next"]
+                "Finished a swap to %s that had been interrupted. Try again" % pending["next"]
             )
         _merge_oauth_account(paths.config_path, identity)
         _clear_swap_marker(paths)
@@ -310,7 +310,7 @@ def install_statusline(config_dir, record_path, command):
     current = settings.get("statusLine")
     recorded = _read_record(record_path)
     if isinstance(current, dict) and current.get("command") == command:
-        return "status line already connected"
+        return "Status line already connected"
     # Any grazr shim counts as ours. An upgrade that died between the two writes
     # leaves the old shim in the settings, and it is not the user's status line.
     ours_before = recorded and _is_ours(current, recorded)
@@ -322,23 +322,23 @@ def install_statusline(config_dir, record_path, command):
         "refreshInterval": (previous or {}).get("refreshInterval", 60),
     }
     _write_settings(config_dir, settings)
-    return "status line connected"
+    return "Status line connected"
 
 
 def uninstall_statusline(config_dir, record_path):
     recorded = _read_record(record_path)
     if recorded is None:
-        return "status line was not connected"
+        return "Status line was not connected"
     settings = _read_settings(config_dir)
     if not _is_ours(settings.get("statusLine"), recorded):
-        return "status line was not grazr's, left alone"
+        return "Status line was not grazr's, left alone"
     if recorded["previous"]:
         settings["statusLine"] = recorded["previous"]
     else:
         del settings["statusLine"]
     _write_settings(config_dir, settings)
     os.remove(record_path)
-    return "status line disconnected"
+    return "Status line disconnected"
 
 
 def statusline_installed(config_dir, record_path):
@@ -406,7 +406,7 @@ def _pending_swap(paths, store, active_id, live):
         _clear_swap_marker(paths)
         return None
     raise RuntimeError(
-        "a swap from %s to %s was interrupted and the live credential matches "
+        "A swap from %s to %s was interrupted and the live credential matches "
         "neither account, so grazr leaves it alone. Log in again with `claude auth login`"
         % (active_id, pending["next"])
     )
