@@ -12,6 +12,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   usage. Every rotation wiped the record of having shown it, and a pane
   resumed days ago and idle since re-runs the status line every minute with no
   limits to report, so the toast came back seconds after every swap.
+- A swap on demand is written to `grazr.log` like an automatic one. Only
+  Herdr's plugin log had it.
 
 ## 0.3.0 - 2026-09-07
 

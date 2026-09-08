@@ -2250,6 +2250,15 @@ class SwapTest(EnrolledPairFixture):
         self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
         self.assertIn("rotated work -> personal", printed)
 
+    def test_the_swap_is_logged_like_an_automatic_one(self):
+        """The toast is gone in three seconds and Herdr's plugin log keeps a
+        handful of entries, so a swap you asked for was the one kind that
+        never reached grazr.log."""
+        self.invoke(grazr.swap)
+
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            self.assertIn("rotated work -> personal", handle.read())
+
     def test_honours_dry_run(self):
         self.write_config('ACCOUNTS="work personal"\nDRY_RUN=1\n')
 

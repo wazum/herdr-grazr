@@ -704,12 +704,12 @@ def swap(runtime=None):
                 "nothing to swap to, earliest reset %s" % (soonest or "unknown")
             )
         decision = ("rotate", next_id)
-        print(
-            act_on(decision, runtime, active, limits, enrolled, now)
-        )
+        line = act_on(decision, runtime, active, limits, enrolled, now)
+        print(line)
 
     if _moved(decision, config.dry_run):
         tag_all(_name_of(enrolled, next_id))
+    _log(state_dir, now, line)
     return 0
 
 
