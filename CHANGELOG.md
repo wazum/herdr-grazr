@@ -4,6 +4,18 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.2 - 2026-09-09
+
+### Fixed
+
+- No more false "every account is low" right after a swap. A session keeps
+  reporting the account it left until its next request, and grazr counted that
+  leftover reading against the account it had just moved to when the last
+  message before the swap ticked the old account a shade below the figure grazr
+  parked. The reading's reset time already says whose it is, so grazr now
+  trusts that over the headroom when the two accounts' windows reset at
+  different times.
+
 ## 0.3.1 - 2026-09-08
 
 ### Fixed
