@@ -542,9 +542,11 @@ def _previous_bar(state_dir, payload, spawn):
 
 def _left_behind(limits, active, enrolled):
     """A session keeps reporting the account it left until its next request.
-    Such a reading shows that account's windows, by reset time, with no more
-    usage than it had when parked. Two accounts can share a reset time, so
-    every window has to match on both counts."""
+    Such a reading shows that account's windows, by reset time. When the active
+    account's own windows reset at other times, that alone tells the reading is
+    not its, whatever headroom it shows: the last message before the swap can
+    tick the parked figure a shade lower. Headroom only decides it when the
+    active account could be the source, since two accounts can share a reset."""
     windows = {
         (entry.group, entry.resets_at.replace(microsecond=0)): entry.remaining
         for entry in limits
@@ -552,6 +554,14 @@ def _left_behind(limits, active, enrolled):
     }
     if not windows:
         return False
+    active_resets = {
+        (item.group, item.resets_at.replace(microsecond=0))
+        for entry in enrolled
+        if entry.id == active and isinstance(entry.snapshot, list)
+        for item in entry.snapshot
+        if item.resets_at
+    }
+    could_be_active = not active_resets or bool(active_resets & set(windows))
     for entry in enrolled:
         if entry.id == active or not isinstance(entry.snapshot, list):
             continue
@@ -560,9 +570,10 @@ def _left_behind(limits, active, enrolled):
             for item in entry.snapshot
             if item.resets_at
         }
-        if all(
-            window in parked and remaining >= parked[window]
-            for window, remaining in windows.items()
+        if not all(window in parked for window in windows):
+            continue
+        if not could_be_active or all(
+            remaining >= parked[window] for window, remaining in windows.items()
         ):
             return True
     return False

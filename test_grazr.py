@@ -2440,6 +2440,22 @@ class StatuslineTest(EnrolledPairFixture):
         with open(os.path.join(self.state_dir, "accounts", "uuid-work.json")) as handle:
             self.assertEqual((self.rotations, json.load(handle).get("snapshot")), ([], None))
 
+    def test_a_leftover_reading_lower_than_when_it_was_parked_is_still_ignored(self):
+        """A leftover reading can show a shade less than grazr parked, when the
+        last message before the swap ticked the old account down. Its reset time
+        still tells whose it is, so headroom must not record it against the
+        active account instead."""
+        active_window = datetime.now(timezone.utc) + timedelta(hours=5)
+        self.write_account_snapshot("uuid-work", remaining=80, resets_at=active_window)
+        left_window = datetime.now(timezone.utc) + timedelta(hours=3)
+        self.write_account_snapshot("uuid-personal", remaining=13, resets_at=left_window)
+
+        self.run_statusline(self.payload(used=89, resets_at=int(left_window.timestamp())))
+
+        with open(os.path.join(self.state_dir, "accounts", "uuid-work.json")) as handle:
+            recorded = json.load(handle)["snapshot"]
+        self.assertEqual((self.rotations, recorded[0]["remaining"]), ([], 80))
+
     def test_enabled_off_leaves_the_account_alone(self):
         self.write_config('ACCOUNTS="work personal"\nENABLED=0\n')
 
