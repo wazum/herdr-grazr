@@ -445,6 +445,7 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
     if limits is None:
         _warn_unreadable(state_dir, payload)
         return 0
+    _disarm_unreadable(state_dir, payload)
     active = claude.active_account(paths)
     if active is None or _left_behind(limits, active, accounts.load(paths, [])):
         return 0
@@ -456,10 +457,15 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
     return 0
 
 
+UNREADABLE_PENDING = "unreadable_pending.json"
+
+
 def _warn_unreadable(state_dir, payload):
-    """A Claude release that renames the field would leave grazr blind in
-    silence. A session that has not reached the API yet has no limits to send,
-    so only one that has counts."""
+    """A renamed field would leave grazr blind, and a turn that has not reached
+    the API sends nothing, so only a completed turn with no limits is worth a
+    warning. The block is also missing for a turn right after a resume, so the
+    first gap only arms it: a reading that carries limits disarms it, and only a
+    version that keeps missing trips it."""
     try:
         sent = json.loads(payload)
         spoken = sent["context_window"]["total_input_tokens"] > 0
@@ -468,9 +474,38 @@ def _warn_unreadable(state_dir, payload):
         return
     if not spoken:
         return
+    armed = _pending_unreadable(state_dir)
+    if version not in armed:
+        _write_pending_unreadable(state_dir, armed | {version})
+        return
     line = "Claude %s sends no rate limits in its status line, so grazr sees no usage" % version
     if _announce_once(state_dir, "unreadable:%s" % version, "grazr: cannot read Claude's usage", line):
         _log(state_dir, datetime.now(timezone.utc), line)
+
+
+def _disarm_unreadable(state_dir, payload):
+    """A reading that carries limits proves the version can send them."""
+    try:
+        version = json.loads(payload).get("version", "unknown")
+    except (ValueError, AttributeError):
+        return
+    armed = _pending_unreadable(state_dir)
+    if version in armed:
+        _write_pending_unreadable(state_dir, armed - {version})
+
+
+def _pending_unreadable(state_dir):
+    try:
+        with open(os.path.join(state_dir, UNREADABLE_PENDING)) as handle:
+            armed = json.load(handle)
+    except (OSError, ValueError):
+        return set()
+    return set(armed) if isinstance(armed, list) else set()
+
+
+def _write_pending_unreadable(state_dir, versions):
+    # ponytail: lock-free; a rare arm/disarm race self-corrects on the next reading.
+    atomic.write(os.path.join(state_dir, UNREADABLE_PENDING), json.dumps(sorted(versions)))
 
 
 def _detach_decide(state_dir):

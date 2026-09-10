@@ -2501,6 +2501,31 @@ class StatuslineTest(EnrolledPairFixture):
         self.assertEqual(self.notices[0][0], "grazr: cannot read Claude's usage")
         self.assertIn("9.9.9", self.notices[0][1])
 
+    def test_a_first_turn_without_limits_only_arms_the_warning(self):
+        """A completed turn can come back with no limits block for a turn right
+        after a session resumes, so one on its own is not grazr going blind."""
+        blind = json.dumps({"session_id": "s", "version": "9.9.9",
+                            "context_window": {"total_input_tokens": 512}})
+
+        self.run_statusline(blind)
+
+        self.assertEqual(self.notices, [])
+
+    def test_a_reading_with_limits_disarms_the_warning(self):
+        """A reading that does carry limits proves the version can send them, so
+        the gap before it must not be reported as usage grazr cannot read."""
+        blind = json.dumps({"session_id": "s", "version": "9.9.9",
+                            "context_window": {"total_input_tokens": 512}})
+        reading = json.dumps({"session_id": "s", "version": "9.9.9",
+                             "context_window": {"total_input_tokens": 512},
+                             "rate_limits": {"five_hour": {"used_percentage": 10, "resets_at": None}}})
+
+        self.run_statusline(blind)
+        self.run_statusline(reading)
+        self.run_statusline(blind)
+
+        self.assertEqual(self.notices, [])
+
     def test_a_rotation_does_not_bring_the_warning_back(self):
         """An idle pane that sends no limits re-runs the status line every
         minute, so a rotation that wiped its record brought the toast back
