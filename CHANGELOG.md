@@ -4,6 +4,16 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.3 - 2026-09-10
+
+### Fixed
+
+- No more "cannot read Claude's usage" after a restart or a Claude update. A
+  completed turn can come back with no limits block for a turn right after a
+  session resumes, and grazr read that one gap as the field being gone. It now
+  waits: the first gap arms the warning, a reading that does carry limits
+  clears it, and only a version that keeps missing them trips it.
+
 ## 0.3.2 - 2026-09-09
 
 ### Fixed
