@@ -46,8 +46,19 @@ DRY_RUN=0                # 1 = log the decision, do not swap
 _THRESHOLD_KEYS = {"REMAINING_SESSION": ("session", 15), "REMAINING_WEEKLY": ("weekly", 20)}
 _FLAG_KEYS = (("ENABLED", True), ("DRY_RUN", False))
 
+LOG = "grazr.log"
+PREVIOUS_STATUSLINE = "statusline.previous.json"
+UNREADABLE_PENDING = "unreadable_pending.json"
+
+TAG = "grazr"
+ESCAPE = "\x1b"
+CLOSE_KEYS = (ESCAPE, "q", "\r", "\n", "")
+
 # Telling the user is worth a moment, but not a stuck status line.
 NOTIFY_TIMEOUT_SECONDS = 5
+# A rotation reports to every Claude pane, so none of them may hang.
+TAG_TIMEOUT_SECONDS = 5
+STATUSLINE_TIMEOUT_SECONDS = 5
 
 
 def notify(title, body, spawn=subprocess.run):
@@ -78,12 +89,6 @@ def notify(title, body, spawn=subprocess.run):
         return json.loads(completed.stdout)["result"]["shown"] is True
     except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
         return False
-
-
-TAG = "grazr"
-
-# A rotation reports to every Claude pane, so none of them may hang.
-TAG_TIMEOUT_SECONDS = 5
 
 
 def tag_all(name, spawn=subprocess.run):
@@ -284,8 +289,6 @@ def _write_notices(state_dir, notices):
     atomic.write(os.path.join(state_dir, "notices.json"), json.dumps(notices))
 
 
-
-
 def load_config(path):
     """Parse config.env, seeding it on first run. Every problem names its key:
     a threshold typo that silently defaulted would rotate at the wrong moment."""
@@ -360,10 +363,6 @@ def _flag(value, key, default):
     return value == "1"
 
 
-ESCAPE = "\x1b"
-CLOSE_KEYS = (ESCAPE, "q", "\r", "\n", "")
-
-
 def read_key(stream=None):
     """One keypress, no Enter, so Esc can close a pane. Falls back to a line
     when stdin is not a terminal, which is how the tests drive it."""
@@ -424,11 +423,6 @@ def _config_path():
     return os.path.join(directory, "config.env")
 
 
-PREVIOUS_STATUSLINE = "statusline.previous.json"
-STATUSLINE_TIMEOUT_SECONDS = 5
-LOG = "grazr.log"
-
-
 def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
     """Runs inside Claude after every message, with the status-line payload on
     stdin. The bar stays the one configured before grazr. Claude cancels this
@@ -455,9 +449,6 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
     if core.needs_rotation(limits, datetime.now(timezone.utc), config.thresholds):
         (detach or (lambda: _detach_decide(state_dir)))()
     return 0
-
-
-UNREADABLE_PENDING = "unreadable_pending.json"
 
 
 def _warn_unreadable(state_dir, payload):
