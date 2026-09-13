@@ -4,6 +4,17 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.4 - 2026-09-13
+
+### Fixed
+
+- No more "cannot read Claude's usage" at a weekly reset. Right at a reset the
+  usage block is missing for a turn, and with several sessions crossing the
+  line together, 0.3.3 counted those single misses as one version going blind.
+  The warning now follows a single session. It fires only when one session
+  completes two turns and never once gets usage, which is what a dropped field
+  looks like and a reset never does.
+
 ## 0.3.3 - 2026-09-10
 
 ### Fixed
