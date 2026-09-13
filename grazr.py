@@ -49,6 +49,8 @@ _FLAG_KEYS = (("ENABLED", True), ("DRY_RUN", False))
 LOG = "grazr.log"
 PREVIOUS_STATUSLINE = "statusline.previous.json"
 UNREADABLE_PENDING = "unreadable_pending.json"
+# Only a live session can miss twice, so the armed set never needs to be large.
+UNREADABLE_PENDING_CAP = 64
 
 TAG = "grazr"
 ESCAPE = "\x1b"
@@ -452,22 +454,27 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
 
 
 def _warn_unreadable(state_dir, payload):
-    """A renamed field would leave grazr blind, and a turn that has not reached
-    the API sends nothing, so only a completed turn with no limits is worth a
-    warning. The block is also missing for a turn right after a resume, so the
-    first gap only arms it: a reading that carries limits disarms it, and only a
-    version that keeps missing trips it."""
+    """A renamed field would leave grazr blind, so a completed turn with no
+    limits is worth a warning (a turn that never reached the API has none to
+    send). The block is also missing for a turn after a resume or reset, so the
+    first miss in a session only arms it: a reading with limits disarms that
+    session, and only a session that misses twice trips the warning, announced
+    once per version."""
     try:
         sent = json.loads(payload)
         spoken = sent["context_window"]["total_input_tokens"] > 0
+        session = sent.get("session_id")
         version = sent.get("version", "unknown")
     except (ValueError, KeyError, TypeError, AttributeError):
         return
-    if not spoken:
+    if not spoken or not session:
         return
     armed = _pending_unreadable(state_dir)
-    if version not in armed:
-        _write_pending_unreadable(state_dir, armed | {version})
+    if session not in armed:
+        armed[session] = version
+        if len(armed) > UNREADABLE_PENDING_CAP:
+            armed.pop(next(iter(armed)))
+        _write_pending_unreadable(state_dir, armed)
         return
     line = "Claude %s sends no rate limits in its status line, so grazr sees no usage" % version
     if _announce_once(state_dir, "unreadable:%s" % version, "grazr: cannot read Claude's usage", line):
@@ -475,28 +482,31 @@ def _warn_unreadable(state_dir, payload):
 
 
 def _disarm_unreadable(state_dir, payload):
-    """A reading that carries limits proves the version can send them."""
+    """A reading that carries limits proves the session can read them."""
     try:
-        version = json.loads(payload).get("version", "unknown")
+        session = json.loads(payload).get("session_id")
     except (ValueError, AttributeError):
         return
     armed = _pending_unreadable(state_dir)
-    if version in armed:
-        _write_pending_unreadable(state_dir, armed - {version})
+    if session in armed:
+        del armed[session]
+        _write_pending_unreadable(state_dir, armed)
 
 
 def _pending_unreadable(state_dir):
+    """Sessions that have missed once, mapped to their Claude version. The old
+    list format is read as empty, so the upgrade starts fresh."""
     try:
         with open(os.path.join(state_dir, UNREADABLE_PENDING)) as handle:
             armed = json.load(handle)
     except (OSError, ValueError):
-        return set()
-    return set(armed) if isinstance(armed, list) else set()
+        return {}
+    return armed if isinstance(armed, dict) else {}
 
 
-def _write_pending_unreadable(state_dir, versions):
-    # ponytail: lock-free; a rare arm/disarm race self-corrects on the next reading.
-    atomic.write(os.path.join(state_dir, UNREADABLE_PENDING), json.dumps(sorted(versions)))
+def _write_pending_unreadable(state_dir, armed):
+    # No lock: a rare arm/disarm race only delays a warning, never invents one.
+    atomic.write(os.path.join(state_dir, UNREADABLE_PENDING), json.dumps(armed))
 
 
 def _detach_decide(state_dir):

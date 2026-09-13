@@ -2526,6 +2526,42 @@ class StatuslineTest(EnrolledPairFixture):
 
         self.assertEqual(self.notices, [])
 
+    def test_two_sessions_each_missing_once_do_not_warn(self):
+        """At a weekly reset the usage block can be missing for a turn across
+        several sessions at once. That is not the field going away, only one
+        session missing across its own turns is, so two sessions missing once
+        each stays quiet."""
+        base = {"version": "9.9.9", "context_window": {"total_input_tokens": 512}}
+
+        self.run_statusline(json.dumps({**base, "session_id": "a"}))
+        self.run_statusline(json.dumps({**base, "session_id": "b"}))
+
+        self.assertEqual(self.notices, [])
+
+    def test_one_session_missing_twice_still_warns(self):
+        """A session that completes two turns and never once gets usage is the
+        renamed-field case the warning exists for."""
+        blind = json.dumps({"session_id": "a", "version": "9.9.9",
+                            "context_window": {"total_input_tokens": 512}})
+
+        self.run_statusline(blind)
+        self.run_statusline(blind)
+
+        self.assertEqual(len(self.notices), 1)
+        self.assertEqual(self.notices[0][0], "grazr: cannot read Claude's usage")
+
+    def test_the_old_version_list_on_disk_is_read_as_empty(self):
+        """0.3.3 stored a list of versions here. The session-keyed dict starts
+        fresh rather than choking on the old shape."""
+        with open(os.path.join(self.state_dir, "unreadable_pending.json"), "w") as handle:
+            json.dump(["9.9.9"], handle)
+        blind = json.dumps({"session_id": "a", "version": "9.9.9",
+                            "context_window": {"total_input_tokens": 512}})
+
+        self.run_statusline(blind)
+
+        self.assertEqual(self.notices, [])
+
     def test_a_rotation_does_not_bring_the_warning_back(self):
         """An idle pane that sends no limits re-runs the status line every
         minute, so a rotation that wiped its record brought the toast back
