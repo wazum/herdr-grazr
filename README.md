@@ -5,7 +5,7 @@
   </picture>
 </p>
 <h1 align="center">grazr</h1>
-<p align="center">Rotational grazing for <a href="https://claude.com/claude-code">Claude Code</a>: moves the herd to a fresh account before the pasture runs out.<br>A <a href="https://herdr.dev">Herdr</a> plugin.</p>
+<p align="center">Rotational grazing for <a href="https://claude.com/claude-code">Claude Code</a>: moves the herd to a fresh account before the pasture runs out, in the middle of a message and with no restart.<br>A <a href="https://herdr.dev">Herdr</a> plugin.</p>
 <br>
 
 <p align="center">
@@ -19,9 +19,11 @@
 
 A Claude pane goes dead when the 5-hour or weekly limit hits. Getting it back
 means logging in as another account by hand. *grazr* does not wait for the wall.
-When a window is nearly spent, it swaps which stored credential the official
-`claude` binary reads. It sees the usage Claude reports after every message
-and swaps within one, mid-turn, so a pane is not blocked or prompted.
+It reads the usage Claude reports after every message, and when a window is
+nearly spent it swaps which stored credential the official `claude` binary
+reads to a fresh account. Claude picks that up on its next request, so the
+switch lands mid-message. No restart, no background daemon on a timer, no
+prompt to answer.
 
 **You do nothing.** There is no command to run and no prompt to answer. A pane
 mid-task keeps going on the fresh account, and a pane you were not watching
