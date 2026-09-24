@@ -177,20 +177,16 @@ def act_on(decision, runtime, active_id, limits, accounts=(), now=None):
         return line if announced else None
 
     if decision == "exhausted":
-        soonest = _soonest_reset(
-            now or datetime.now(timezone.utc),
-            limits,
-            *(entry.snapshot for entry in accounts)
-        )
         # Below your thresholds, not cut off by the server: these accounts still
         # serve requests, so saying they are spent would stop you working for
         # no reason.
-        line = "Every account is below your thresholds, earliest reset %s" % (
-            soonest or "unknown"
+        readings = {entry.id: entry.snapshot for entry in accounts}
+        readings[active_id] = limits
+        line = "Every account is below your thresholds, earliest reset %s" % _earliest_reset(
+            now or datetime.now(timezone.utc), config.thresholds, readings, accounts
         )
-        announced = _announce_once(
-            state_dir, "exhausted:%s" % soonest, "grazr: every account is low", line
-        )
+        # Keyed on the line, so a change of window earns its own announcement.
+        announced = _announce_once(state_dir, line, "grazr: every account is low", line)
         return line if announced else None
 
     kind, payload = decision
@@ -237,18 +233,36 @@ def _moved(decision, dry_run):
     return not dry_run and isinstance(decision, tuple) and decision[0] == "rotate"
 
 
-def _soonest_reset(now, *snapshots):
-    """When the first window anywhere reopens, as a local weekday and clock
-    time, since it ends up in a toast. A snapshot can hold one that already
-    has, and naming that would give a time in the past."""
-    times = [
-        entry.resets_at
-        for snapshot in snapshots
-        if isinstance(snapshot, list)
-        for entry in snapshot
-        if entry.resets_at and entry.resets_at > now
-    ]
-    return min(times).astimezone().strftime("%a %H:%M") if times else None
+def _earliest_reset(now, thresholds, readings, enrolled):
+    """When the first of these accounts could take over again, which one, and
+    the window holding it back, as a local weekday and clock time since it ends
+    up in a toast. "unknown" when no window says.
+
+    Spent windows are the only ones that count, on the same terms core keeps
+    headroom. A healthy window reopening leaves every account as spent as it
+    was, so quoting its reset promises a wait that changes nothing, and a spent
+    one with no reset time keeps its account out entirely rather than let a
+    sibling window speak for it. An account is free once the last of its spent
+    windows has reset, so that one speaks for it, and the first free wins."""
+    freed = []
+    for identifier, snapshot in readings.items():
+        if not isinstance(snapshot, list):
+            continue
+        spent = [
+            entry
+            for entry in snapshot
+            if entry.group in thresholds
+            and entry.remaining < thresholds[entry.group]
+            and (entry.resets_at is None or entry.resets_at > now)
+        ]
+        if spent and all(entry.resets_at for entry in spent):
+            freed.append(max((entry.resets_at, entry.group, identifier) for entry in spent))
+    if not freed:
+        return "unknown"
+    when, group, identifier = min(freed)
+    return "%s (%s, %s window)" % (
+        when.astimezone().strftime("%a %H:%M"), _name_of(enrolled, identifier), group
+    )
 
 
 def _announce_once(state_dir, key, title, body):
@@ -746,9 +760,14 @@ def swap(runtime=None):
         enrolled = accounts.load(paths, config.accounts)
         next_id = core.next_account(active, enrolled, now, config.thresholds)
         if next_id is None:
-            soonest = _soonest_reset(now, *(entry.snapshot for entry in enrolled))
+            # The account you are on is never a swap target, so its reset says
+            # nothing about when this key does something.
+            candidates = {
+                entry.id: entry.snapshot for entry in enrolled if entry.id != active
+            }
             return _refuse_swap(
-                "Nothing to swap to, earliest reset %s" % (soonest or "unknown")
+                "Nothing to swap to, earliest reset %s"
+                % _earliest_reset(now, config.thresholds, candidates, enrolled)
             )
         decision = ("rotate", next_id)
         try:

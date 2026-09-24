@@ -2099,7 +2099,9 @@ class ActOnDecisionTest(unittest.TestCase):
         self.assertIn(clock(LATER), line)
         self.assertNotIn(clock(EARLIER), line)
 
-    def test_the_soonest_reset_is_the_earliest_not_the_latest(self):
+    def test_an_account_is_free_only_when_its_last_blocking_window_resets(self):
+        """Naming the first of two spent windows promises a wait that ends with
+        the account still below threshold on the other one."""
         limits = [
             limit(group="weekly", remaining=0, resets_at=LATER),
             limit(group="session", remaining=0, resets_at=SOONER),
@@ -2107,8 +2109,53 @@ class ActOnDecisionTest(unittest.TestCase):
 
         line = self.act("exhausted", limits=limits)
 
-        self.assertIn(clock(SOONER), line)
+        self.assertIn(clock(LATER), line)
         self.assertNotIn("+00:00", line, "a person reads a clock, not an ISO timestamp")
+
+    def test_a_window_with_headroom_does_not_set_the_wait(self):
+        """The session window reopening in an hour changes nothing while the
+        weekly one is what holds every account back."""
+        limits = [
+            limit(group="session", remaining=90, resets_at=SOONER),
+            limit(group="weekly", remaining=0, resets_at=LATER),
+        ]
+
+        line = self.act("exhausted", limits=limits)
+
+        self.assertIn(clock(LATER), line)
+        self.assertNotIn(clock(SOONER), line)
+
+    def test_it_names_the_account_and_the_window_that_hold_the_wait(self):
+        """A weekly wall and a 5-hour one are hours or days apart, and the line
+        was the only place to learn which one you are sitting behind."""
+        limits = [limit(group="weekly", remaining=0, resets_at=LATER)]
+
+        line = self.act(
+            "exhausted", limits=limits, accounts=[account_named("work", "uuid-work")]
+        )
+
+        self.assertIn("(work, weekly window)", line)
+
+    def test_a_spent_window_with_no_reset_is_not_promised_away(self):
+        """core counts a window with no reset time as spent until further
+        notice. Naming the other window's reset would say the wait ends there,
+        and it does not."""
+        limits = [
+            limit(group="session", remaining=0, resets_at=None),
+            limit(group="weekly", remaining=0, resets_at=LATER),
+        ]
+
+        line = self.act("exhausted", limits=limits)
+
+        self.assertIn("earliest reset unknown", line)
+
+    def test_a_new_blocking_window_earns_a_fresh_announcement(self):
+        """Same reset time, other window: the wait the user was told about is
+        not the wait they are in."""
+        self.act("exhausted", limits=[limit(group="session", remaining=0, resets_at=LATER)])
+        self.act("exhausted", limits=[limit(group="weekly", remaining=0, resets_at=LATER)])
+
+        self.assertEqual(len(self.notices), 2)
 
     def test_exhaustion_without_usable_limits_still_reports(self):
         for limits in (None, [], [limit(resets_at=None)]):
@@ -2292,6 +2339,32 @@ class SwapTest(EnrolledPairFixture):
         self.assertIn("Nothing to swap to", printed)
         self.assertEqual(len(self.notices), 1)
         self.assertIn("Nothing to swap to", self.notices[0][1])
+
+    def test_nowhere_to_go_names_the_window_that_holds_it(self):
+        """The refusal is on screen under the user's finger, so it carries the
+        same answer the automatic line does: which window, and until when."""
+        reset = datetime.now(timezone.utc) + timedelta(hours=3)
+        self.write_account_snapshot("uuid-personal", remaining=0, resets_at=reset)
+
+        code, printed = self.invoke(grazr.swap)
+
+        self.assertEqual(code, 1)
+        self.assertIn(clock(reset), printed)
+        self.assertIn("(personal, session window)", printed)
+
+    def test_the_account_you_are_on_is_not_offered_as_the_wait(self):
+        """The key never swaps to the account it is on, so naming its reset
+        promises a swap that is still refused when the time comes."""
+        mine = datetime.now(timezone.utc) + timedelta(hours=1)
+        theirs = datetime.now(timezone.utc) + timedelta(days=2)
+        self.write_account_snapshot("uuid-work", remaining=0, resets_at=mine)
+        self.write_account_snapshot("uuid-personal", remaining=0, resets_at=theirs)
+
+        code, printed = self.invoke(grazr.swap)
+
+        self.assertEqual(code, 1)
+        self.assertIn("(personal, session window)", printed)
+        self.assertNotIn(clock(mine), printed)
 
     def test_a_refusal_mid_swap_is_shown_like_having_nowhere_to_go(self):
         """A refusal raised mid-swap reached only the plugin log, so the key
