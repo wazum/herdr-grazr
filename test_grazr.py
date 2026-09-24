@@ -1047,6 +1047,31 @@ class RotateTest(unittest.TestCase):
 
                 self.assertEqual(bool(note and "expired" in note), expected)
 
+    def test_it_reports_when_the_refresh_behind_an_arriving_token_runs_out(self):
+        """The refresh token is what turns a lapsed token back into a working
+        one, so when a swap is followed by a sign-out, how much life it had
+        left is the first thing worth knowing."""
+        self.store.parked["uuid-personal"] = json.dumps({"claudeAiOauth": {
+            "accessToken": "tok",
+            "expiresAt": (time.time() + 3600) * 1000,
+            "refreshTokenExpiresAt": datetime(2026, 10, 3, tzinfo=timezone.utc).timestamp() * 1000,
+        }})
+
+        note = claude.rotate(self.paths, self.store, "uuid-work", "uuid-personal", None)
+
+        self.assertIn("2026-10-03", note)
+
+    def test_a_credential_that_names_no_refresh_expiry_still_swaps(self):
+        """Older parked credentials carry no such field, and a swap refused
+        over a missing note would strand the pane on a spent account."""
+        self.store.parked["uuid-personal"] = json.dumps(
+            {"claudeAiOauth": {"accessToken": "tok"}}
+        )
+
+        claude.rotate(self.paths, self.store, "uuid-work", "uuid-personal", None)
+
+        self.assertEqual(json.loads(self.store.live)["claudeAiOauth"]["accessToken"], "tok")
+
     def test_an_auth_setting_stops_the_swap_before_it_pretends_to_work(self):
         """Any of these puts Claude on API-key auth, so swapping the saved
         claude.ai login underneath one changes nothing while the log and the
@@ -2541,6 +2566,46 @@ class StatuslineTest(EnrolledPairFixture):
 
         with open(os.path.join(self.state_dir, "grazr.log")) as handle:
             self.assertIn("Rotated work -> personal", handle.read())
+
+    def test_the_same_swap_twice_is_logged_twice(self):
+        """Swaps run between the same two accounts, so the second reads exactly
+        like the first. Dropping it leaves the log claiming one swap where
+        there were many."""
+        for _ in range(2):
+            grazr._log(self.state_dir, NOW, "Rotated work -> personal")
+
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            self.assertEqual(handle.read().count("Rotated work -> personal"), 2)
+
+    def test_a_reading_with_no_account_records_the_sign_out(self):
+        """Claude signing out is the one event grazr saw and threw away. In the
+        log it sits under the swap that came before it."""
+        os.remove(os.path.join(self.claude_dir, ".claude.json"))
+
+        self.run_statusline(self.payload(used=10))
+
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            self.assertIn("signed out", handle.read())
+
+    def test_the_sign_out_is_recorded_once_not_on_every_message(self):
+        os.remove(os.path.join(self.claude_dir, ".claude.json"))
+
+        for _ in range(3):
+            self.run_statusline(self.payload(used=10))
+
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            self.assertEqual(handle.read().count("signed out"), 1)
+
+    def test_a_refused_swap_is_logged_once_not_on_every_message(self):
+        """A Claude lock that is busy is busy again on the next message of
+        every pane, and the log is not the place to count them."""
+        self.refusal = "Claude is writing its config, so grazr is not swapping now"
+
+        for _ in range(3):
+            self.run_statusline(self.payload(used=90))
+
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            self.assertEqual(handle.read().count("Not rotating"), 1)
 
     def test_the_panes_are_tagged_after_the_lock_is_let_go(self):
         self.run_statusline(self.payload(used=90))

@@ -249,27 +249,40 @@ def rotate(paths, store, active_id, next_id, snapshot):
         _clear_swap_marker(paths)
 
     accounts.record_snapshot(paths, active_id, snapshot)
-    return _expired_note(arriving)
+    return _arrival_note(arriving)
 
 
-def _expired_note(blob):
-    """What to say about a parked token that expired while it sat, or None.
+def _arrival_note(blob):
+    """What to say about the credential a swap just installed, or None.
 
-    Claude refreshes an expired token on its next request, so this is not a
-    refusal. But a refresh token spent somewhere else -- another machine, a
-    `claude auth login` for the same account -- fails that refresh and Claude
-    signs the account out, so the note is the warning.
+    Claude refreshes an expired token on its next request, so a lapse is not a
+    refusal. A refresh that fails signs the account out, and then these two
+    times are the only record of what grazr handed over.
     """
     try:
-        expires_at = json.loads(blob)["claudeAiOauth"]["expiresAt"]
-    except (KeyError, TypeError, ValueError):
+        oauth = json.loads(blob)["claudeAiOauth"]
+        expires_at = _epoch_milliseconds(oauth.get("expiresAt"))
+        refresh_expires_at = _epoch_milliseconds(oauth.get("refreshTokenExpiresAt"))
+    except (AttributeError, KeyError, TypeError, ValueError):
         return None
-    if not isinstance(expires_at, (int, float)) or isinstance(expires_at, bool):
+    notes = []
+    if expires_at is not None and expires_at <= time.time() * 1000:
+        notes.append("Its token had expired while parked, so Claude has to refresh it")
+    if refresh_expires_at is not None:
+        notes.append(
+            "The refresh behind it runs to %s"
+            % datetime.fromtimestamp(refresh_expires_at / 1000, timezone.utc)
+            .astimezone()
+            .strftime("%Y-%m-%d %H:%M")
+        )
+    return ". " + ". ".join(notes) if notes else None
+
+
+def _epoch_milliseconds(value):
+    """Claude writes its token times as epoch milliseconds."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
         return None
-    # Claude writes this as epoch milliseconds.
-    if expires_at > time.time() * 1000:
-        return None
-    return ". Its token had expired while parked, so Claude has to refresh it"
+    return value
 
 
 def settings_auth_override(config_dir):

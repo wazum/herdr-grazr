@@ -457,7 +457,10 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
         return 0
     _disarm_unreadable(state_dir, payload)
     active = claude.active_account(paths)
-    if active is None or _left_behind(limits, active, accounts.load(paths, [])):
+    if active is None:
+        _report_signed_out(state_dir)
+        return 0
+    if _left_behind(limits, active, accounts.load(paths, [])):
         return 0
     with _file_lock(os.path.join(state_dir, "readings.lock"), wait=True):
         limits = core.merged(_latest_reading(paths, active), limits)
@@ -465,6 +468,14 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
     if core.needs_rotation(limits, datetime.now(timezone.utc), config.thresholds):
         (detach or (lambda: _detach_decide(state_dir)))()
     return 0
+
+
+def _report_signed_out(state_dir):
+    """No account against a live reading means Claude signed out. Logged once
+    until something else is, since every message of every pane reaches this."""
+    line = "Claude is signed out, so grazr has no account to read for"
+    if not _logged_last(state_dir, line):
+        _log(state_dir, datetime.now(timezone.utc), line)
 
 
 def _warn_unreadable(state_dir, payload):
@@ -562,9 +573,12 @@ def decide(runtime=None):
 
     # Two herdr calls per pane, capped at five seconds each, is far too long to
     # hold the lock every other pane is waiting on.
-    if _moved(decision, config.dry_run):
+    moved = _moved(decision, config.dry_run)
+    if moved:
         tag_all(_name_of(enrolled, decision[1]))
-    if line:
+    # A swap is an event and goes in every time. Everything else stands until
+    # something changes, and would repeat on every message of every pane.
+    if line and (moved or not _logged_last(state_dir, line)):
         _log(state_dir, now, line)
     return 0
 
@@ -630,17 +644,17 @@ def _left_behind(limits, active, enrolled):
 
 
 def _log(state_dir, now, line):
-    """One line per decision, not one per message it holds for."""
-    path = os.path.join(state_dir, LOG)
-    try:
-        with open(path) as handle:
-            last = handle.read().rstrip("\n").rsplit("\n", 1)[-1]
-    except OSError:
-        last = ""
-    if last.endswith(" " + line):
-        return
-    with open(path, "a") as handle:
+    with open(os.path.join(state_dir, LOG), "a") as handle:
         handle.write("%s %s\n" % (now.astimezone().strftime("%Y-%m-%d %H:%M:%S"), line))
+
+
+def _logged_last(state_dir, line):
+    """Whether the log already ends with this line, timestamp aside."""
+    try:
+        with open(os.path.join(state_dir, LOG)) as handle:
+            return handle.read().rstrip("\n").rsplit("\n", 1)[-1].endswith(" " + line)
+    except OSError:
+        return False
 
 
 def _rotation_lock(state_dir):
