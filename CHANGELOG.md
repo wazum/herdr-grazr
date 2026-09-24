@@ -4,6 +4,26 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.6 - 2026-09-24
+
+### Added
+
+- Every swap says what it handed over: whether the arriving credential's token
+  had lapsed while it sat parked, and when the refresh behind that token runs
+  out. Claude renews a lapsed token on its next request, but a renewal that
+  fails signs the account out, and these two times are the only record of what
+  *grazr* installed.
+- Claude signing you out goes in the log. A reading with no account behind it
+  means Claude has signed out, and *grazr* saw that and dropped it.
+
+### Fixed
+
+- The log keeps every swap. A line the same as the one before it was dropped,
+  and swaps run between the same two accounts, so a second swap read exactly
+  like the first and never appeared at all. A standing situation, such as a
+  Claude lock that is busy or a dry run, still takes one line, since those
+  repeat on every message of every pane.
+
 ## 0.3.5 - 2026-09-24
 
 ### Fixed
