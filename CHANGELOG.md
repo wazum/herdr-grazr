@@ -4,6 +4,26 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.5 - 2026-09-24
+
+### Fixed
+
+- The wait *grazr* names is now the one that ends it. "Every account is below
+  your thresholds" and "nothing to swap to" quoted the first window to reopen
+  anywhere, even one that still had plenty left, so you were told to come back
+  in an hour while the weekly window you were really behind had three days to
+  go. Only windows below your thresholds count now, and an account behind two
+  of them is named for the later one, since the first to reset still leaves it
+  short.
+- The swap key no longer names the account you are already on. It never swaps
+  to that one, so its reset said nothing about when the key would work.
+
+### Changed
+
+- Both messages say which account frees up first and which window is holding
+  it, as in "earliest reset Thu 09:00 (work, weekly window)". They gave a bare
+  time before, and a five-hour wait and a weekly one read the same.
+
 ## 0.3.4 - 2026-09-13
 
 ### Fixed
