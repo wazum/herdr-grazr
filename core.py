@@ -1,5 +1,4 @@
 from collections import namedtuple
-from datetime import timedelta
 
 Limit = namedtuple("Limit", "kind scope group remaining resets_at")
 Account = namedtuple("Account", "id name snapshot")
@@ -13,7 +12,7 @@ FALLBACK_MARGIN = 10
 FRESH = 95
 
 # How long before its reset an account's leftover is worth going back for.
-LAST_DAY = timedelta(hours=24)
+LAST_DAY_SECONDS = 24 * 60 * 60
 
 
 def merged(previous, current):
@@ -106,7 +105,8 @@ def expiring_sooner(limits, active, accounts, now, thresholds):
             if limit.group != "weekly" or not limit.resets_at or not now < limit.resets_at < ends:
                 continue
             worth_it = limit.remaining >= thresholds.get("weekly", 0) + FALLBACK_MARGIN
-            if fresh or (limit.resets_at - now <= LAST_DAY and worth_it):
+            last_day = (limit.resets_at - now).total_seconds() <= LAST_DAY_SECONDS
+            if fresh or (last_day and worth_it):
                 return candidate.id
     return None
 
