@@ -4,6 +4,24 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.7 - 2026-09-25
+
+### Fixed
+
+- Saving the login you are on no longer races a swap. It read the credential
+  and the account it belongs to one after the other, and a swap landing in
+  between filed one account's credential under the other's name. While a swap
+  is running it now refuses and asks you to try again.
+- A pane still showing an old usage window can no longer hide a low reading.
+  Its figures could replace the current window's just before the decision ran,
+  and that decision then let the account run on. The window on record now
+  stays until a newer one arrives.
+- A login you never enrolled says why *grazr* does not rotate off it. There is
+  nowhere to keep its reading, so the decision never saw one, and it stayed
+  put without a word. It now says so once in the log and as a notification.
+  The status screen no longer claims it rotates away on its own, and points
+  you to the swap key or to enrolling it.
+
 ## 0.3.6 - 2026-09-24
 
 ### Added
