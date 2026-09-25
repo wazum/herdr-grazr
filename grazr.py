@@ -34,7 +34,7 @@ Runtime = namedtuple("Runtime", "paths store state_dir config")
 DEFAULT_CONFIG = """\
 # Rotate when a limit group has less than this percent left.
 REMAINING_SESSION=15     # the 5-hour window
-REMAINING_WEEKLY=20      # weekly windows, incl. per-model ones
+REMAINING_WEEKLY=10      # weekly windows, incl. per-model ones
 
 # Preference order. First account with headroom wins.
 ACCOUNTS=""
@@ -43,7 +43,7 @@ ENABLED=1
 DRY_RUN=0                # 1 = log the decision, do not swap
 """
 
-_THRESHOLD_KEYS = {"REMAINING_SESSION": ("session", 15), "REMAINING_WEEKLY": ("weekly", 20)}
+_THRESHOLD_KEYS = {"REMAINING_SESSION": ("session", 15), "REMAINING_WEEKLY": ("weekly", 10)}
 _FLAG_KEYS = (("ENABLED", True), ("DRY_RUN", False))
 
 LOG = "grazr.log"

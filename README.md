@@ -108,11 +108,16 @@ $EDITOR "$(herdr plugin config-dir wazum.grazr)/config.env"
 
 ```sh
 REMAINING_SESSION=15     # rotate when the 5-hour window has less than this left
-REMAINING_WEEKLY=20      # weekly windows get more margin, because losing one costs days
+REMAINING_WEEKLY=10      # what is left below this expires unused at the weekly reset
 ACCOUNTS="work personal" # preference order, first with headroom wins
 ENABLED=1
 DRY_RUN=0                # 1 = log the decision, do not swap
 ```
+
+Whatever an account has left when *grazr* moves off it stays there until that
+window resets, so a large weekly margin is a large weekly loss. Raise it only
+if you use the same account elsewhere, such as on claude.ai, and want a
+reserve for that.
 
 Start with `DRY_RUN=1` for a day. Every decision is written to `grazr.log` in
 the plugin's state directory (`herdr plugin state-dir wazum.grazr`), with a

@@ -1715,6 +1715,16 @@ class ThresholdDefaultTest(unittest.TestCase):
 
         self.assertEqual(config.thresholds["session"], 15)
 
+    def test_the_weekly_default_is_ten_percent(self):
+        """Whatever is below the weekly threshold when the account is left
+        expires unused at its reset, so the margin stays small."""
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+
+        config = grazr.load_config(os.path.join(directory, "config.env"))
+
+        self.assertEqual(config.thresholds["weekly"], 10)
+
 
 class PathResolutionTest(unittest.TestCase):
     def setUp(self):
