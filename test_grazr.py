@@ -2763,6 +2763,38 @@ class StatuslineTest(EnrolledPairFixture):
             logged = handle.read()
         self.assertEqual(logged.count("window reset"), 1, logged)
 
+    def test_a_payload_missing_a_window_is_not_the_first_reading_either(self):
+        """Right after a swap the new account's session window is often gone
+        from the payload, since it ran out while parked. The first turn is the
+        reading that lowers a window or opens a new one."""
+        now = datetime.now(timezone.utc)
+        session_reset = int((now + timedelta(hours=1)).timestamp())
+        weekly_reset = int((now + timedelta(days=3)).timestamp())
+        path = os.path.join(self.state_dir, "accounts", "uuid-personal.json")
+        with open(path) as handle:
+            stored = json.load(handle)
+        stored["snapshot"] = [
+            {"kind": "session", "scope": None, "group": "session", "remaining": 50,
+             "resets_at": datetime.fromtimestamp(session_reset, timezone.utc).isoformat()},
+            {"kind": "weekly_all", "scope": None, "group": "weekly", "remaining": 60,
+             "resets_at": datetime.fromtimestamp(weekly_reset, timezone.utc).isoformat()},
+        ]
+        with open(path, "w") as handle:
+            json.dump(stored, handle)
+        self.run_statusline(self.payload(used=90))
+        self.write_login("uuid-personal")
+        weekly_only = json.dumps({"rate_limits": {"seven_day": {
+            "used_percentage": 40, "resets_at": weekly_reset,
+        }}})
+
+        self.run_statusline(weekly_only)
+        self.run_statusline(self.payload(used=55, resets_at=session_reset))
+
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            logged = handle.read()
+        self.assertEqual(logged.count("First reading"), 1, logged)
+        self.assertIn("First reading on personal after the swap: session 50% -> 45%", logged)
+
     def test_a_window_replaced_by_a_newer_one_logs_what_it_had_left(self):
         """What is left at a reset is lost, and how much that is decides
         whether the thresholds are right."""

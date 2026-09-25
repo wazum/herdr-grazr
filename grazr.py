@@ -479,10 +479,11 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
         for expired in core.replaced(previous, limits, now):
             _log(state_dir, now, "%s %s window reset with %d%% left" % (name, expired.group, expired.remaining))
         limits = core.merged(previous, limits, now)
-        # An idle pane repeats an old figure every minute and can be the first
-        # payload after a swap. Only a reading that moves the record is a turn
-        # on the new account.
-        if limits != previous and accounts.first_reading_due(paths, active):
+        # An idle pane repeats an old figure every minute, and a payload can
+        # lack a window that ran out while the account was parked. Either can
+        # be the first payload after a swap. Only a reading that lowers a
+        # window or opens one is a turn on the new account.
+        if core.moved(previous, limits) and accounts.first_reading_due(paths, active):
             _log(state_dir, now, "First reading on %s after the swap: %s" % (name, _cost(previous, limits)))
             accounts.mark_first_reading_due(paths, active, due=False)
         accounts.record_snapshot(paths, active, limits)

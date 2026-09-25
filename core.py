@@ -19,7 +19,8 @@ def merged(previous, current, now):
     """A window already on record keeps the lowest headroom it has shown. Idle
     panes repeat old figures, and a repeat must not put headroom back. A newer
     window is taken as it comes. An older one comes from a pane that has not
-    caught up, and the window on record stays. One that has run out is not
+    caught up, and the window on record stays. So does one the payload leaves
+    out, since a window can be absent on its own. One that has run out is not
     taken at all, so a repeat cannot bring it back once it was dropped."""
     if not isinstance(previous, list):
         return _live(current, now)
@@ -39,7 +40,24 @@ def merged(previous, current, now):
                 remaining=min(entry.remaining, lowest.get((entry.group, entry.resets_at), entry.remaining))
             )
         )
+    covered = {(entry.kind, entry.group) for entry in current}
+    readings += [entry for entry in previous if (entry.kind, entry.group) not in covered]
     return _live(readings, now)
+
+
+def moved(previous, current):
+    """Whether `current` shows spending the record does not: a window lowered
+    or a new one opened. A payload that merely lacks a window, or repeats one,
+    shows none."""
+    recorded = {
+        (entry.kind, entry.group, entry.resets_at): entry.remaining
+        for entry in (previous if isinstance(previous, list) else [])
+    }
+    return any(
+        (entry.kind, entry.group, entry.resets_at) not in recorded
+        or entry.remaining < recorded[(entry.kind, entry.group, entry.resets_at)]
+        for entry in current
+    )
 
 
 def _live(limits, now):
