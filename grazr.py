@@ -906,7 +906,7 @@ def _enrol_from(runtime, source):
         print("A name is required")
         return 1
     try:
-        identifier = claude.enrol(paths, store, name, source)
+        identifier = _enrol_between_rotations(runtime, name, source)
     except RuntimeError as error:
         print("Could not enrol: %s" % error)
         return 1
@@ -914,6 +914,18 @@ def _enrol_from(runtime, source):
     print('Add it to ACCOUNTS in %s' % _config_path())
     print(claude.install_statusline(paths.config_dir, _record_path(state_dir), _shim_command(state_dir)))
     return 0
+
+
+def _enrol_between_rotations(runtime, name, source):
+    """The live login is read in two parts, and a swap between them would park
+    one account's credential under the other's name. An isolated login is one
+    no swap touches."""
+    if source:
+        return claude.enrol(runtime.paths, runtime.store, name, source)
+    with _rotation_lock(runtime.state_dir) as acquired:
+        if not acquired:
+            raise RuntimeError("Busy rotating, try again in a moment")
+        return claude.enrol(runtime.paths, runtime.store, name, source)
 
 
 if __name__ == "__main__":

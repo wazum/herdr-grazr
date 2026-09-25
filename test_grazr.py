@@ -2788,6 +2788,21 @@ class ConnectTest(EnrolledPairFixture):
 
         self.assertEqual(("statusLine" in self.settings(), "connected" in printed), (True, True))
 
+    def test_saving_the_live_login_waits_out_a_rotation(self):
+        """A swap between reading the credential and reading the identity would
+        park one account's credential under the other's name."""
+        held = open(os.path.join(self.state_dir, "rotate.lock"), "w")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        enrolled = []
+
+        with mock.patch.object(claude, "enrol", lambda *arguments: enrolled.append(arguments)), \
+             mock.patch("builtins.input", lambda prompt: "third"):
+            code, printed = self.invoke(lambda runtime: grazr._enrol_from(runtime, None))
+
+        self.assertEqual((code, enrolled), (1, []))
+        self.assertIn("Busy", printed)
+
 
 # Captured from Claude Code 2.1.261, trimmed to the fields around the limits.
 REAL_PAYLOAD = json.dumps({
