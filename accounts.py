@@ -89,7 +89,26 @@ def record_snapshot(paths, identifier, snapshot):
     except (OSError, ValueError):
         return
     account["snapshot"] = snapshot_to_json(snapshot)
+    account.pop("first_reading_due", None)
     write(paths, identifier, account)
+
+
+def mark_first_reading_due(paths, identifier):
+    """The swap just installed this account. Its next reading is the first on
+    it, and record_snapshot clears the mark."""
+    try:
+        account = read(paths, identifier)
+    except (OSError, ValueError):
+        return
+    account["first_reading_due"] = True
+    write(paths, identifier, account)
+
+
+def first_reading_due(paths, identifier):
+    try:
+        return read(paths, identifier).get("first_reading_due") is True
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def snapshot_to_json(snapshot):

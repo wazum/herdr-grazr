@@ -49,7 +49,6 @@ _FLAG_KEYS = (("ENABLED", True), ("DRY_RUN", False))
 LOG = "grazr.log"
 PREVIOUS_STATUSLINE = "statusline.previous.json"
 UNREADABLE_PENDING = "unreadable_pending.json"
-SWAPPED_TO = "swapped_to.json"
 # Only a live session can miss twice, so the armed set never needs to be large.
 UNREADABLE_PENDING_CAP = 64
 
@@ -159,7 +158,7 @@ def _herdr(spawn, *arguments):
     return completed.stdout if completed.returncode == 0 else ""
 
 
-def act_on(decision, runtime, active_id, limits, accounts=(), now=None):
+def act_on(decision, runtime, active_id, limits, enrolled=(), now=None):
     """Carry out what core.decide concluded, and report it. Returns the line
     that goes to stdout, which Herdr keeps in `herdr plugin log`."""
     paths, store, state_dir, config = runtime
@@ -168,7 +167,7 @@ def act_on(decision, runtime, active_id, limits, accounts=(), now=None):
         return None
 
     def name_of(identifier):
-        return _name_of(accounts, identifier)
+        return _name_of(enrolled, identifier)
 
     if decision == "unenrolled":
         line = "Nothing to rotate to. Enrol a second account and list it in ACCOUNTS"
@@ -181,10 +180,10 @@ def act_on(decision, runtime, active_id, limits, accounts=(), now=None):
         # Below your thresholds, not cut off by the server: these accounts still
         # serve requests, so saying they are spent would stop you working for
         # no reason.
-        readings = {entry.id: entry.snapshot for entry in accounts}
+        readings = {entry.id: entry.snapshot for entry in enrolled}
         readings[active_id] = limits
         line = "Every account is below your thresholds, earliest reset %s" % _earliest_reset(
-            now or datetime.now(timezone.utc), config.thresholds, readings, accounts
+            now or datetime.now(timezone.utc), config.thresholds, readings, enrolled
         )
         # Keyed on the line, so a change of window earns its own announcement.
         announced = _announce_once(state_dir, line, "grazr: every account is low", line)
@@ -207,12 +206,12 @@ def act_on(decision, runtime, active_id, limits, accounts=(), now=None):
         return "DRY_RUN: would rotate %s -> %s" % (name_of(active_id), name_of(next_id))
 
     note = claude.rotate(paths, store, active_id, next_id, limits)
-    atomic.write(os.path.join(state_dir, SWAPPED_TO), json.dumps({"account": next_id}))
+    accounts.mark_first_reading_due(paths, next_id)
     now = now or datetime.now(timezone.utc)
     low = core.shortfall(limits or [], now, config.thresholds)
     if low:
         why = ", %s %d%% < %d%%" % (low.group, low.remaining, config.thresholds[low.group])
-    elif core.expiring_sooner(limits or [], active_id, accounts, now, config.thresholds) == next_id:
+    elif core.expiring_sooner(limits or [], active_id, enrolled, now, config.thresholds) == next_id:
         why = ", its week ends sooner"
     else:
         why = ""
@@ -479,9 +478,8 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
         name = _name_of(enrolled, active)
         for expired in core.replaced(previous, limits):
             _log(state_dir, now, "%s %s window reset with %d%% left" % (name, expired.group, expired.remaining))
-        if _swapped_to(state_dir) == active:
+        if accounts.first_reading_due(paths, active):
             _log(state_dir, now, "First reading on %s after the swap: %s" % (name, _cost(previous, limits)))
-            os.unlink(os.path.join(state_dir, SWAPPED_TO))
         limits = core.merged(previous, limits)
         accounts.record_snapshot(paths, active, limits)
     if not core.needs_rotation(limits, now, config.thresholds) and not core.expiring_sooner(
@@ -493,15 +491,6 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
         return 0
     (detach or (lambda: _detach_decide(state_dir)))()
     return 0
-
-
-def _swapped_to(state_dir):
-    """The account the last swap installed, until its first reading arrives."""
-    try:
-        with open(os.path.join(state_dir, SWAPPED_TO)) as handle:
-            return json.load(handle).get("account")
-    except (OSError, ValueError, AttributeError):
-        return None
 
 
 def _cost(parked, limits):
