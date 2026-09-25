@@ -30,6 +30,19 @@ def merged(previous, current):
     return readings
 
 
+def replaced(previous, current):
+    """The windows on record that `current` supersedes with a newer one. Their
+    last reading is what expired unused."""
+    if not isinstance(previous, list):
+        return []
+    newest = {(entry.kind, entry.group): entry.resets_at for entry in current if entry.resets_at}
+    return [
+        entry
+        for entry in previous
+        if entry.resets_at and entry.resets_at < newest.get((entry.kind, entry.group), entry.resets_at)
+    ]
+
+
 def needs_rotation(limits, now, thresholds):
     return not _has_headroom(limits, now, thresholds)
 

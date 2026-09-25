@@ -2559,6 +2559,21 @@ class StatuslineTest(EnrolledPairFixture):
 
         self.assertEqual(self.rotations, [])
 
+    def test_a_window_replaced_by_a_newer_one_logs_what_it_had_left(self):
+        """What is left at a reset is lost, and how much that is decides
+        whether the thresholds are right."""
+        now = datetime.now(timezone.utc)
+        for used, reset in (
+            (60, int((now + timedelta(minutes=1)).timestamp())),
+            (10, int((now + timedelta(hours=5)).timestamp())),
+        ):
+            payload = self.payload(used=used, resets_at=reset)
+            self.invoke(lambda runtime, p=payload: grazr.statusline(runtime, p, detach=lambda: None))
+
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            logged = handle.read()
+        self.assertIn("work session window reset with 40% left", logged)
+
     def test_a_pane_still_on_an_older_window_cannot_replace_the_current_one(self):
         now = datetime.now(timezone.utc)
         for used, reset in (

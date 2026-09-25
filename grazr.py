@@ -466,7 +466,11 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
     if _left_behind(limits, active, enrolled):
         return 0
     with _file_lock(os.path.join(state_dir, "readings.lock"), wait=True):
-        limits = core.merged(_latest_reading(paths, active), limits)
+        previous = _latest_reading(paths, active)
+        for expired in core.replaced(previous, limits):
+            _log(state_dir, datetime.now(timezone.utc), "%s %s window reset with %d%% left" % (
+                _name_of(enrolled, active), expired.group, expired.remaining))
+        limits = core.merged(previous, limits)
         accounts.record_snapshot(paths, active, limits)
     if not core.needs_rotation(limits, datetime.now(timezone.utc), config.thresholds):
         return 0

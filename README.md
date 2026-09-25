@@ -121,7 +121,9 @@ reserve for that.
 
 Start with `DRY_RUN=1` for a day. Every decision is written to `grazr.log` in
 the plugin's state directory (`herdr plugin state-dir wazum.grazr`), with a
-timestamp, since the status line's own output is the bar.
+timestamp, since the status line's own output is the bar. The log also says what
+a window had left when it reset. If that is often well above your threshold, the
+threshold is higher than it needs to be.
 
 ### Turn Herdr's toasts on
 
