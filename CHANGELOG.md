@@ -4,6 +4,29 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.0 - 2026-09-25
+
+### Added
+
+- A weekly reset hands over to the account whose week ends sooner. What that
+  account has left is gone at its reset unless you spend it first. So when the
+  week on your account has just reset and another account still has headroom
+  in a week that ends earlier, *grazr* moves there. At most once per reset.
+- When every account is below your thresholds, *grazr* moves to the one with
+  the most left on its lowest window, if that is ten points more than the
+  account you are on. Before, it stayed, and you hit the limit while the other
+  account still had something.
+- The log says which window triggered a swap, as in "Rotated work -> personal,
+  weekly 19% < 10%", and what a window had left when a newer one replaced it.
+  If that number is often well above your threshold, the threshold is too high.
+
+### Changed
+
+- `REMAINING_WEEKLY` defaults to 10, down from 20. What is below the threshold
+  when *grazr* leaves an account stays there until the reset, so 20 lost a
+  fifth of that account's week each time. A `config.env` you already have
+  keeps its own value.
+
 ## 0.3.7 - 2026-09-25
 
 ### Fixed
