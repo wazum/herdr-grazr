@@ -479,7 +479,9 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
         limits = core.merged(previous, limits)
         accounts.record_snapshot(paths, active, limits)
     now = datetime.now(timezone.utc)
-    if not core.needs_rotation(limits, now, config.thresholds) and not core.fresh_weeks(limits, now):
+    if not core.needs_rotation(limits, now, config.thresholds) and not core.expiring_sooner(
+        limits, active, enrolled, now, config.thresholds
+    ):
         return 0
     if not any(entry.id == active for entry in enrolled):
         _report_unenrolled_active(state_dir, active)

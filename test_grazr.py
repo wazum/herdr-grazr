@@ -225,6 +225,25 @@ class ExpiringSoonerTest(unittest.TestCase):
             "stay",
         )
 
+    def test_in_its_last_day_an_account_with_enough_left_is_worth_going_back_for(self):
+        """A session swap hours before a weekly reset leaves that week's
+        remainder parked, and nothing else comes back for it."""
+        in_use = [limit(group="weekly", remaining=41, resets_at=NOW + timedelta(days=3))]
+
+        self.assertEqual(
+            decide(in_use, "work", [self.ending_in(0.25, remaining=40)], now=NOW, thresholds=THRESHOLDS),
+            ("rotate", "sooner"),
+        )
+
+    def test_it_does_not_go_back_for_crumbs(self):
+        """Two swaps for a few points cost more than they recover."""
+        in_use = [limit(group="weekly", remaining=41, resets_at=NOW + timedelta(days=3))]
+
+        self.assertEqual(
+            decide(in_use, "work", [self.ending_in(0.25, remaining=29)], now=NOW, thresholds=THRESHOLDS),
+            "stay",
+        )
+
     def test_the_account_handed_over_to_does_not_hand_back(self):
         """Its own week ends first, so the rule that moved it holds it there."""
         parked = account("work", snapshot=self.fresh_week())
@@ -2661,6 +2680,27 @@ class StatuslineTest(EnrolledPairFixture):
         with open(os.path.join(self.state_dir, "grazr.log")) as handle:
             logged = handle.read()
         self.assertIn("Rotated work -> personal, its week ends sooner", logged)
+
+    def test_a_healthy_reading_still_goes_back_for_a_week_in_its_last_day(self):
+        """The cheap check on every message must not skip this case."""
+        now = datetime.now(timezone.utc)
+        path = os.path.join(self.state_dir, "accounts", "uuid-personal.json")
+        with open(path) as handle:
+            stored = json.load(handle)
+        stored["snapshot"] = [{
+            "kind": "weekly_all", "scope": None, "group": "weekly", "remaining": 40,
+            "resets_at": (now + timedelta(hours=6)).isoformat(),
+        }]
+        with open(path, "w") as handle:
+            json.dump(stored, handle)
+        payload = json.dumps({"rate_limits": {
+            "five_hour": {"used_percentage": 10, "resets_at": int((now + timedelta(hours=4)).timestamp())},
+            "seven_day": {"used_percentage": 59, "resets_at": int((now + timedelta(days=3)).timestamp())},
+        }})
+
+        self.run_statusline(payload)
+
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
 
     def test_a_window_replaced_by_a_newer_one_logs_what_it_had_left(self):
         """What is left at a reset is lost, and how much that is decides

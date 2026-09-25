@@ -120,6 +120,12 @@ reset, and another account still has headroom in a week that ends sooner,
 *grazr* moves there. What that account has left goes first, or it expires
 unused at its reset. That is at most one swap per weekly reset.
 
+The same happens in the last day of an account's week. A session swap hours
+before a weekly reset leaves that week's remainder parked, so once the parked
+account's week ends within 24 hours, its session has room again, and it has at
+least ten points more than the weekly threshold, *grazr* goes back for it.
+Less than that is not worth two swaps.
+
 When every account is below the thresholds, *grazr* moves to the one with the
 most left on its lowest window, once that is ten points more than the account
 you are on. Otherwise it stays, and you keep working until the wall.

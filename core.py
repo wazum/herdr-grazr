@@ -1,4 +1,5 @@
 from collections import namedtuple
+from datetime import timedelta
 
 Limit = namedtuple("Limit", "kind scope group remaining resets_at")
 Account = namedtuple("Account", "id name snapshot")
@@ -10,6 +11,9 @@ FALLBACK_MARGIN = 10
 
 # A weekly window with at least this much left has just reset.
 FRESH = 95
+
+# How long before its reset an account's leftover is worth going back for.
+LAST_DAY = timedelta(hours=24)
 
 
 def merged(previous, current):
@@ -82,35 +86,28 @@ def _worst_window(limits, now, thresholds):
     )
 
 
-def fresh_weeks(limits, now):
-    """When the weekly windows that have just reset end. Cheap and account-free,
-    like needs_rotation, since it is asked on every message."""
-    return [
-        limit.resets_at
-        for limit in limits
-        if limit.group == "weekly" and limit.remaining >= FRESH and limit.resets_at and limit.resets_at > now
-    ]
-
-
 def expiring_sooner(limits, active, accounts, now, thresholds):
-    """Once the active account's week is fresh, the first account fit to take
-    over whose week ends before it, or None. Spending that one first is what
-    keeps its leftover from expiring unused. Only a fresh week hands over, so
-    this fires at a reset and not on every message."""
-    fresh = fresh_weeks(limits, now)
-    if not fresh:
+    """The first account fit to take over whose week ends before the active
+    account's, or None. What it has left is lost at its reset unless spent
+    first. So that this does not undo every session swap five hours later, it
+    fires only when the active week has just reset, or in the last day of the
+    other account's week when enough is left there to be worth two swaps."""
+    weeks = [limit for limit in limits if limit.group == "weekly" and limit.resets_at and limit.resets_at > now]
+    if not weeks:
         return None
-    ends = min(fresh)
+    ends = min(limit.resets_at for limit in weeks)
+    fresh = any(limit.remaining >= FRESH for limit in weeks)
     for candidate in accounts:
         if candidate.id == active or not isinstance(candidate.snapshot, list):
             continue
         if not _has_headroom(candidate.snapshot, now, thresholds):
             continue
-        if any(
-            limit.group == "weekly" and limit.resets_at and now < limit.resets_at < ends
-            for limit in candidate.snapshot
-        ):
-            return candidate.id
+        for limit in candidate.snapshot:
+            if limit.group != "weekly" or not limit.resets_at or not now < limit.resets_at < ends:
+                continue
+            worth_it = limit.remaining >= thresholds.get("weekly", 0) + FALLBACK_MARGIN
+            if fresh or (limit.resets_at - now <= LAST_DAY and worth_it):
+                return candidate.id
     return None
 
 
