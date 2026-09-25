@@ -460,14 +460,27 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
     if active is None:
         _report_signed_out(state_dir)
         return 0
-    if _left_behind(limits, active, accounts.load(paths, [])):
+    enrolled = accounts.load(paths, [])
+    if _left_behind(limits, active, enrolled):
         return 0
     with _file_lock(os.path.join(state_dir, "readings.lock"), wait=True):
         limits = core.merged(_latest_reading(paths, active), limits)
         accounts.record_snapshot(paths, active, limits)
-    if core.needs_rotation(limits, datetime.now(timezone.utc), config.thresholds):
-        (detach or (lambda: _detach_decide(state_dir)))()
+    if not core.needs_rotation(limits, datetime.now(timezone.utc), config.thresholds):
+        return 0
+    if not any(entry.id == active for entry in enrolled):
+        _report_unenrolled_active(state_dir, active)
+        return 0
+    (detach or (lambda: _detach_decide(state_dir)))()
     return 0
+
+
+def _report_unenrolled_active(state_dir, active):
+    """A login grazr never enrolled has no account file to keep its reading, so
+    the decision would find nothing and stay without a word."""
+    line = "This login is not enrolled, so grazr cannot rotate away on its own. Use the swap key or enrol it"
+    if _announce_once(state_dir, "unenrolled-active:%s" % active, "grazr: login not enrolled", line):
+        _log(state_dir, datetime.now(timezone.utc), line)
 
 
 def _report_signed_out(state_dir):
@@ -829,9 +842,10 @@ def status(runtime=None):
     if active and not any(account.id == active for account in enrolled):
         # Enrolled but left out of ACCOUNTS is the likelier mistake, and calling
         # that "not enrolled" sends you off to enrol it a second time.
-        enrolled = any(account.id == active for account in accounts.load(paths, []))
-        print("  This login is %s, so grazr can rotate away but not back"
-              % ("enrolled but missing from ACCOUNTS" if enrolled else "not enrolled"))
+        if any(account.id == active for account in accounts.load(paths, [])):
+            print("  This login is enrolled but missing from ACCOUNTS, so grazr can rotate away but not back")
+        else:
+            print("  This login is not enrolled, so only the swap key moves off it. Enrol it to rotate on its own")
 
     last = _last_decision(state_dir)
     if last:

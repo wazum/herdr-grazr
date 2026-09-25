@@ -2486,6 +2486,27 @@ class StatuslineTest(EnrolledPairFixture):
 
         self.assertEqual(printed, "inner bar")
 
+    def test_a_login_grazr_never_enrolled_says_once_why_it_does_not_rotate(self):
+        """Its reading has no account file to go in, so the decision never sees
+        it. Silence there looks like a rotation that should have happened."""
+        os.unlink(os.path.join(self.state_dir, "accounts", "uuid-work.json"))
+
+        for _ in range(2):
+            self.run_statusline(self.payload(used=99))
+
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            logged = handle.read()
+        self.assertEqual(logged.count("not enrolled"), 1, logged)
+        self.assertEqual(len(self.notices), 1)
+
+    def test_the_status_screen_does_not_promise_rotation_from_a_login_never_enrolled(self):
+        os.unlink(os.path.join(self.state_dir, "accounts", "uuid-work.json"))
+
+        with mock.patch.object(grazr, "read_key", lambda: "q"):
+            _, printed = self.invoke(grazr.status)
+
+        self.assertIn("This login is not enrolled, so only the swap key moves off it", printed)
+
     def test_without_a_previous_status_line_the_bar_stays_empty(self):
         _, printed = self.run_statusline(self.payload(used=90))
 
