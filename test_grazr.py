@@ -2516,6 +2516,19 @@ class StatuslineTest(EnrolledPairFixture):
 
         self.assertEqual(self.rotations, [])
 
+    def test_a_pane_still_on_an_older_window_cannot_replace_the_current_one(self):
+        now = datetime.now(timezone.utc)
+        for used, reset in (
+            (99, int((now + timedelta(hours=1)).timestamp())),
+            (20, int((now - timedelta(hours=4)).timestamp())),
+        ):
+            payload = self.payload(used=used, resets_at=reset)
+            self.invoke(lambda runtime, p=payload: grazr.statusline(runtime, p, detach=lambda: None))
+
+        self.invoke(grazr.decide)
+
+        self.assertEqual(len(self.rotations), 1)
+
     def test_two_accounts_sharing_a_reset_time_still_rotate(self):
         """Reset times fall on ten-minute marks, so two accounts can share one.
         That alone must not make a reading look like the other account's."""

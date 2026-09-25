@@ -6,17 +6,28 @@ Account = namedtuple("Account", "id name snapshot")
 
 def merged(previous, current):
     """A window already on record keeps the lowest headroom it has shown. Idle
-    panes repeat old figures, and a repeat must not put headroom back. A new
-    window is taken as it comes."""
+    panes repeat old figures, and a repeat must not put headroom back. A newer
+    window is taken as it comes. An older one comes from a pane that has not
+    caught up, and the window on record stays."""
     if not isinstance(previous, list):
         return current
     lowest = {(entry.group, entry.resets_at): entry.remaining for entry in previous}
-    return [
-        entry._replace(
-            remaining=min(entry.remaining, lowest.get((entry.group, entry.resets_at), entry.remaining))
+    newest = {
+        (entry.kind, entry.group): entry
+        for entry in sorted((entry for entry in previous if entry.resets_at), key=lambda entry: entry.resets_at)
+    }
+    readings = []
+    for entry in current:
+        recorded = newest.get((entry.kind, entry.group))
+        if recorded and entry.resets_at and entry.resets_at < recorded.resets_at:
+            readings.append(recorded)
+            continue
+        readings.append(
+            entry._replace(
+                remaining=min(entry.remaining, lowest.get((entry.group, entry.resets_at), entry.remaining))
+            )
         )
-        for entry in current
-    ]
+    return readings
 
 
 def needs_rotation(limits, now, thresholds):
