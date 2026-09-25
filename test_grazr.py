@@ -2882,6 +2882,13 @@ class StatuslineTest(EnrolledPairFixture):
         self.assertEqual(self.notices[0][0], "grazr: cannot read Claude's usage")
         self.assertIn("9.9.9", self.notices[0][1])
 
+    def test_the_armed_sessions_live_in_a_file_named_for_the_status_line(self):
+        payload = json.dumps({"session_id": "s1", "version": "9.9", "context_window": {"total_input_tokens": 5}})
+
+        self.run_statusline(payload)
+
+        self.assertTrue(os.path.exists(os.path.join(self.state_dir, "statusline.unreadable.json")))
+
     def test_a_first_turn_without_limits_only_arms_the_warning(self):
         """A completed turn can come back with no limits block for a turn right
         after a session resumes, so one on its own is not grazr going blind."""

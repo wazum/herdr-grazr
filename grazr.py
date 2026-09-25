@@ -48,7 +48,7 @@ _FLAG_KEYS = (("ENABLED", True), ("DRY_RUN", False))
 
 LOG = "grazr.log"
 PREVIOUS_STATUSLINE = "statusline.previous.json"
-UNREADABLE_PENDING = "unreadable_pending.json"
+UNREADABLE_PENDING = "statusline.unreadable.json"
 # Only a live session can miss twice, so the armed set never needs to be large.
 UNREADABLE_PENDING_CAP = 64
 
