@@ -3,6 +3,11 @@ from collections import namedtuple
 Limit = namedtuple("Limit", "kind scope group remaining resets_at")
 Account = namedtuple("Account", "id name snapshot")
 
+# Once every account is below the thresholds, another one must be this much
+# better off before it is worth a swap, or two low accounts would trade places
+# on every message.
+FALLBACK_MARGIN = 10
+
 
 def merged(previous, current):
     """A window already on record keeps the lowest headroom it has shown. Idle
@@ -54,7 +59,23 @@ def decide(limits, active, accounts, now, thresholds):
     if chosen:
         return "rotate", chosen
     # "Every account is spent" would be a claim about accounts that do not exist.
-    return "exhausted" if any(entry.id != active for entry in accounts) else "unenrolled"
+    others = [entry for entry in accounts if entry.id != active]
+    if not others:
+        return "unenrolled"
+    best = max(others, key=lambda entry: _worst_window(entry.snapshot, now, thresholds))
+    if _worst_window(best.snapshot, now, thresholds) >= _worst_window(limits, now, thresholds) + FALLBACK_MARGIN:
+        return "rotate", best.id
+    return "exhausted"
+
+
+def _worst_window(limits, now, thresholds):
+    """How close to the wall an account is: the least left on any live window
+    that has a threshold."""
+    return min(
+        limit.remaining
+        for limit in limits
+        if limit.group in thresholds and (limit.resets_at is None or limit.resets_at > now)
+    )
 
 
 def next_account(active, accounts, now, thresholds):

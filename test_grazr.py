@@ -107,6 +107,37 @@ class DecideTest(unittest.TestCase):
             "exhausted",
         )
 
+    def test_when_nobody_meets_the_thresholds_the_account_with_the_most_left_takes_over(self):
+        """Riding the active account into the wall while the other still has
+        something would strand that something."""
+        limits = [limit(group="session", remaining=2)]
+        low = account("low", snapshot=[limit(group="session", remaining=14, resets_at=LATER)])
+
+        self.assertEqual(
+            decide(limits, active="work", accounts=[low], now=NOW, thresholds=THRESHOLDS),
+            ("rotate", "low"),
+        )
+
+    def test_an_account_less_than_ten_points_better_off_is_not_worth_a_swap(self):
+        limits = [limit(group="session", remaining=5)]
+        low = account("low", snapshot=[limit(group="session", remaining=14, resets_at=LATER)])
+
+        self.assertEqual(
+            decide(limits, active="work", accounts=[low], now=NOW, thresholds=THRESHOLDS),
+            "exhausted",
+        )
+
+    def test_the_fallback_judges_an_account_by_its_worst_window(self):
+        limits = [limit(group="session", remaining=2), limit(group="weekly", remaining=40)]
+        low = account("low", snapshot=[
+            limit(group="session", remaining=50), limit(group="weekly", remaining=3),
+        ])
+
+        self.assertEqual(
+            decide(limits, active="work", accounts=[low], now=NOW, thresholds=THRESHOLDS),
+            "exhausted",
+        )
+
     def test_rotates_to_a_never_used_account(self):
         limits = [limit(group="session", remaining=14)]
         accounts = [account("work"), account("personal")]

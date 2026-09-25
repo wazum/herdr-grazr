@@ -114,6 +114,10 @@ ENABLED=1
 DRY_RUN=0                # 1 = log the decision, do not swap
 ```
 
+When every account is below the thresholds, *grazr* moves to the one with the
+most left on its lowest window, once that is ten points more than the account
+you are on. Otherwise it stays, and you keep working until the wall.
+
 Whatever an account has left when *grazr* moves off it stays there until that
 window resets, so a large weekly margin is a large weekly loss. Raise it only
 if you use the same account elsewhere, such as on claude.ai, and want a
