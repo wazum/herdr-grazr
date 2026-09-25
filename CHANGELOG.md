@@ -4,6 +4,23 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.2 - 2026-09-25
+
+### Fixed
+
+- The first-reading line after a swap could quote an idle pane. Such a pane
+  repeats the figure from its last request every minute, from whenever in the
+  week that was, and it can be the first payload to arrive. Only a reading
+  that moves the record counts now, so the line shows a turn on the new
+  account and not a stale repeat.
+
+### Changed
+
+- The record of sessions whose payload carried no limits is now
+  `statusline.unreadable.json`, named like `statusline.previous.json` beside
+  it. An old `unreadable_pending.json` in the state directory does nothing and
+  can be deleted.
+
 ## 0.4.1 - 2026-09-25
 
 ### Added
