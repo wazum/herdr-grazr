@@ -206,7 +206,9 @@ def act_on(decision, runtime, active_id, limits, accounts=(), now=None):
         return "DRY_RUN: would rotate %s -> %s" % (name_of(active_id), name_of(next_id))
 
     note = claude.rotate(paths, store, active_id, next_id, limits)
-    line = "Rotated %s -> %s%s" % (name_of(active_id), name_of(next_id), note or "")
+    low = core.shortfall(limits or [], now or datetime.now(timezone.utc), config.thresholds)
+    why = ", %s %d%% < %d%%" % (low.group, low.remaining, config.thresholds[low.group]) if low else ""
+    line = "Rotated %s -> %s%s%s" % (name_of(active_id), name_of(next_id), why, note or "")
     shown = notify(
         "grazr: now on %s" % name_of(next_id),
         "Remote Control needs /remote-control per pane",

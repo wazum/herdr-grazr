@@ -1989,6 +1989,18 @@ class ActOnDecisionTest(unittest.TestCase):
                 now or NOW,
             )
 
+    def test_the_line_names_the_window_that_triggered_the_swap(self):
+        limits = [limit(group="session", remaining=40), limit(group="weekly", remaining=19)]
+
+        line = self.act(("rotate", "uuid-personal"), limits=limits)
+
+        self.assertEqual(line, "Rotated uuid-work -> uuid-personal, weekly 19% < 20%")
+
+    def test_a_swap_from_an_account_with_headroom_names_no_window(self):
+        line = self.act(("rotate", "uuid-personal"), limits=[limit(group="weekly", remaining=60)])
+
+        self.assertEqual(line, "Rotated uuid-work -> uuid-personal")
+
     def test_the_line_carries_what_the_swap_reported(self):
         """Only the swap sees the arriving credential."""
         with mock.patch.object(claude, "rotate", lambda *arguments: ". Its token had expired"), \

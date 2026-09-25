@@ -55,9 +55,19 @@ def next_account(active, accounts, now, thresholds):
     return None
 
 
-def _has_headroom(limits, now, thresholds):
-    return all(
-        limit.remaining >= thresholds[limit.group]
-        for limit in limits
-        if limit.group in thresholds and (limit.resets_at is None or limit.resets_at > now)
+def shortfall(limits, now, thresholds):
+    """The first live window below its threshold, or None."""
+    return next(
+        (
+            limit
+            for limit in limits
+            if limit.group in thresholds
+            and limit.remaining < thresholds[limit.group]
+            and (limit.resets_at is None or limit.resets_at > now)
+        ),
+        None,
     )
+
+
+def _has_headroom(limits, now, thresholds):
+    return shortfall(limits, now, thresholds) is None
