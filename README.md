@@ -139,7 +139,9 @@ Start with `DRY_RUN=1` for a day. Every decision is written to `grazr.log` in
 the plugin's state directory (`herdr plugin state-dir wazum.grazr`), with a
 timestamp, since the status line's own output is the bar. The log also says what
 a window had left when it reset. If that is often well above your threshold, the
-threshold is higher than it needs to be.
+threshold is higher than it needs to be. After a swap it logs the first reading
+on the new account next to what that account had when it was parked. The drop
+is what the swap cost: a token refresh and a cold prompt cache on every pane.
 
 ### Turn Herdr's toasts on
 

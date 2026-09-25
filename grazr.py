@@ -49,6 +49,7 @@ _FLAG_KEYS = (("ENABLED", True), ("DRY_RUN", False))
 LOG = "grazr.log"
 PREVIOUS_STATUSLINE = "statusline.previous.json"
 UNREADABLE_PENDING = "unreadable_pending.json"
+SWAPPED_TO = "swapped_to.json"
 # Only a live session can miss twice, so the armed set never needs to be large.
 UNREADABLE_PENDING_CAP = 64
 
@@ -206,6 +207,7 @@ def act_on(decision, runtime, active_id, limits, accounts=(), now=None):
         return "DRY_RUN: would rotate %s -> %s" % (name_of(active_id), name_of(next_id))
 
     note = claude.rotate(paths, store, active_id, next_id, limits)
+    atomic.write(os.path.join(state_dir, SWAPPED_TO), json.dumps({"account": next_id}))
     now = now or datetime.now(timezone.utc)
     low = core.shortfall(limits or [], now, config.thresholds)
     if low:
@@ -471,14 +473,17 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
     enrolled = accounts.load(paths, [])
     if _left_behind(limits, active, enrolled):
         return 0
+    now = datetime.now(timezone.utc)
     with _file_lock(os.path.join(state_dir, "readings.lock"), wait=True):
         previous = _latest_reading(paths, active)
+        name = _name_of(enrolled, active)
         for expired in core.replaced(previous, limits):
-            _log(state_dir, datetime.now(timezone.utc), "%s %s window reset with %d%% left" % (
-                _name_of(enrolled, active), expired.group, expired.remaining))
+            _log(state_dir, now, "%s %s window reset with %d%% left" % (name, expired.group, expired.remaining))
+        if _swapped_to(state_dir) == active:
+            _log(state_dir, now, "First reading on %s after the swap: %s" % (name, _cost(previous, limits)))
+            os.unlink(os.path.join(state_dir, SWAPPED_TO))
         limits = core.merged(previous, limits)
         accounts.record_snapshot(paths, active, limits)
-    now = datetime.now(timezone.utc)
     if not core.needs_rotation(limits, now, config.thresholds) and not core.expiring_sooner(
         limits, active, enrolled, now, config.thresholds
     ):
@@ -488,6 +493,30 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
         return 0
     (detach or (lambda: _detach_decide(state_dir)))()
     return 0
+
+
+def _swapped_to(state_dir):
+    """The account the last swap installed, until its first reading arrives."""
+    try:
+        with open(os.path.join(state_dir, SWAPPED_TO)) as handle:
+            return json.load(handle).get("account")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _cost(parked, limits):
+    """Each window before and after the first turn on the account, as in
+    "session 100% -> 97%". A window not on record when parked was fresh."""
+    before = {
+        (entry.kind, entry.group, entry.resets_at): entry.remaining
+        for entry in (parked if isinstance(parked, list) else [])
+    }
+    return ", ".join(
+        "%s %d%% -> %d%%" % (
+            entry.group, before.get((entry.kind, entry.group, entry.resets_at), 100), entry.remaining
+        )
+        for entry in limits
+    )
 
 
 def _report_unenrolled_active(state_dir, active):

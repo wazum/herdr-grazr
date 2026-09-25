@@ -2702,6 +2702,18 @@ class StatuslineTest(EnrolledPairFixture):
 
         self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
 
+    def test_the_first_reading_after_a_swap_logs_what_the_first_turn_cost(self):
+        """The drop from what the account had when parked to its first reading
+        is the price of a swap: a token refresh and a cold prompt cache."""
+        self.run_statusline(self.payload(used=90))
+        self.write_login("uuid-personal")
+
+        self.run_statusline(self.payload(used=10))
+
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            logged = handle.read()
+        self.assertIn("First reading on personal after the swap: session 100% -> 90%", logged)
+
     def test_a_window_replaced_by_a_newer_one_logs_what_it_had_left(self):
         """What is left at a reset is lost, and how much that is decides
         whether the thresholds are right."""
