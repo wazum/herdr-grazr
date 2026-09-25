@@ -206,8 +206,14 @@ def act_on(decision, runtime, active_id, limits, accounts=(), now=None):
         return "DRY_RUN: would rotate %s -> %s" % (name_of(active_id), name_of(next_id))
 
     note = claude.rotate(paths, store, active_id, next_id, limits)
-    low = core.shortfall(limits or [], now or datetime.now(timezone.utc), config.thresholds)
-    why = ", %s %d%% < %d%%" % (low.group, low.remaining, config.thresholds[low.group]) if low else ""
+    now = now or datetime.now(timezone.utc)
+    low = core.shortfall(limits or [], now, config.thresholds)
+    if low:
+        why = ", %s %d%% < %d%%" % (low.group, low.remaining, config.thresholds[low.group])
+    elif core.expiring_sooner(limits or [], active_id, accounts, now, config.thresholds) == next_id:
+        why = ", its week ends sooner"
+    else:
+        why = ""
     line = "Rotated %s -> %s%s%s" % (name_of(active_id), name_of(next_id), why, note or "")
     shown = notify(
         "grazr: now on %s" % name_of(next_id),
@@ -472,7 +478,8 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
                 _name_of(enrolled, active), expired.group, expired.remaining))
         limits = core.merged(previous, limits)
         accounts.record_snapshot(paths, active, limits)
-    if not core.needs_rotation(limits, datetime.now(timezone.utc), config.thresholds):
+    now = datetime.now(timezone.utc)
+    if not core.needs_rotation(limits, now, config.thresholds) and not core.fresh_weeks(limits, now):
         return 0
     if not any(entry.id == active for entry in enrolled):
         _report_unenrolled_active(state_dir, active)

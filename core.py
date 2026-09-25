@@ -8,6 +8,9 @@ Account = namedtuple("Account", "id name snapshot")
 # on every message.
 FALLBACK_MARGIN = 10
 
+# A weekly window with at least this much left has just reset.
+FRESH = 95
+
 
 def merged(previous, current):
     """A window already on record keeps the lowest headroom it has shown. Idle
@@ -54,7 +57,8 @@ def needs_rotation(limits, now, thresholds):
 
 def decide(limits, active, accounts, now, thresholds):
     if not needs_rotation(limits, now, thresholds):
-        return "stay"
+        sooner = expiring_sooner(limits, active, accounts, now, thresholds)
+        return ("rotate", sooner) if sooner else "stay"
     chosen = next_account(active, accounts, now, thresholds)
     if chosen:
         return "rotate", chosen
@@ -76,6 +80,38 @@ def _worst_window(limits, now, thresholds):
         for limit in limits
         if limit.group in thresholds and (limit.resets_at is None or limit.resets_at > now)
     )
+
+
+def fresh_weeks(limits, now):
+    """When the weekly windows that have just reset end. Cheap and account-free,
+    like needs_rotation, since it is asked on every message."""
+    return [
+        limit.resets_at
+        for limit in limits
+        if limit.group == "weekly" and limit.remaining >= FRESH and limit.resets_at and limit.resets_at > now
+    ]
+
+
+def expiring_sooner(limits, active, accounts, now, thresholds):
+    """Once the active account's week is fresh, the first account fit to take
+    over whose week ends before it, or None. Spending that one first is what
+    keeps its leftover from expiring unused. Only a fresh week hands over, so
+    this fires at a reset and not on every message."""
+    fresh = fresh_weeks(limits, now)
+    if not fresh:
+        return None
+    ends = min(fresh)
+    for candidate in accounts:
+        if candidate.id == active or not isinstance(candidate.snapshot, list):
+            continue
+        if not _has_headroom(candidate.snapshot, now, thresholds):
+            continue
+        if any(
+            limit.group == "weekly" and limit.resets_at and now < limit.resets_at < ends
+            for limit in candidate.snapshot
+        ):
+            return candidate.id
+    return None
 
 
 def next_account(active, accounts, now, thresholds):

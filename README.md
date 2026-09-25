@@ -114,6 +114,12 @@ ENABLED=1
 DRY_RUN=0                # 1 = log the decision, do not swap
 ```
 
+*grazr* never moves back to an account just because it recovered. The one
+exception is a weekly reset. When the week on the account you are on has just
+reset, and another account still has headroom in a week that ends sooner,
+*grazr* moves there. What that account has left goes first, or it expires
+unused at its reset. That is at most one swap per weekly reset.
+
 When every account is below the thresholds, *grazr* moves to the one with the
 most left on its lowest window, once that is ten points more than the account
 you are on. Otherwise it stays, and you keep working until the wall.

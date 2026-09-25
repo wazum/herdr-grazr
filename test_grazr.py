@@ -187,6 +187,55 @@ class DecideTest(unittest.TestCase):
         )
 
 
+class ExpiringSoonerTest(unittest.TestCase):
+    """A weekly window's leftover is lost at its reset. So once the active
+    account's week is fresh, an account whose week ends sooner goes first."""
+
+    def fresh_week(self, remaining=98):
+        return [limit(group="weekly", remaining=remaining, resets_at=NOW + timedelta(days=7))]
+
+    def ending_in(self, days, remaining=40):
+        return account("sooner", snapshot=[
+            limit(group="weekly", remaining=remaining, resets_at=NOW + timedelta(days=days)),
+        ])
+
+    def test_a_fresh_account_hands_over_to_one_whose_week_ends_sooner(self):
+        self.assertEqual(
+            decide(self.fresh_week(), "work", [self.ending_in(2)], now=NOW, thresholds=THRESHOLDS),
+            ("rotate", "sooner"),
+        )
+
+    def test_a_week_already_in_use_does_not_hand_over(self):
+        """Handing over on every message would undo each session swap five
+        hours later. A reset is the one moment worth a swap of its own."""
+        self.assertEqual(
+            decide(self.fresh_week(remaining=80), "work", [self.ending_in(2)], now=NOW, thresholds=THRESHOLDS),
+            "stay",
+        )
+
+    def test_an_account_whose_week_ends_later_is_left_alone(self):
+        self.assertEqual(
+            decide(self.fresh_week(), "work", [self.ending_in(9)], now=NOW, thresholds=THRESHOLDS),
+            "stay",
+        )
+
+    def test_an_account_below_its_threshold_is_not_worth_it(self):
+        self.assertEqual(
+            decide(self.fresh_week(), "work", [self.ending_in(2, remaining=5)], now=NOW, thresholds=THRESHOLDS),
+            "stay",
+        )
+
+    def test_the_account_handed_over_to_does_not_hand_back(self):
+        """Its own week ends first, so the rule that moved it holds it there."""
+        parked = account("work", snapshot=self.fresh_week())
+        limits = self.ending_in(2).snapshot
+
+        self.assertEqual(
+            decide(limits, "sooner", [parked], now=NOW, thresholds=THRESHOLDS),
+            "stay",
+        )
+
+
 class NextAccountTest(unittest.TestCase):
     """The candidate rule on its own, for a swap the user asks for: the active
     account's headroom is not a question, only who is fit to take over."""
@@ -2589,6 +2638,29 @@ class StatuslineTest(EnrolledPairFixture):
         self.invoke(grazr.decide)
 
         self.assertEqual(self.rotations, [])
+
+    def test_a_fresh_week_hands_over_to_the_account_whose_week_ends_sooner(self):
+        now = datetime.now(timezone.utc)
+        path = os.path.join(self.state_dir, "accounts", "uuid-personal.json")
+        with open(path) as handle:
+            stored = json.load(handle)
+        stored["snapshot"] = [{
+            "kind": "weekly_all", "scope": None, "group": "weekly", "remaining": 40,
+            "resets_at": (now + timedelta(days=2)).isoformat(),
+        }]
+        with open(path, "w") as handle:
+            json.dump(stored, handle)
+        payload = json.dumps({"rate_limits": {
+            "five_hour": {"used_percentage": 10, "resets_at": int((now + timedelta(hours=4)).timestamp())},
+            "seven_day": {"used_percentage": 2, "resets_at": int((now + timedelta(days=7)).timestamp())},
+        }})
+
+        self.run_statusline(payload)
+
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            logged = handle.read()
+        self.assertIn("Rotated work -> personal, its week ends sooner", logged)
 
     def test_a_window_replaced_by_a_newer_one_logs_what_it_had_left(self):
         """What is left at a reset is lost, and how much that is decides
