@@ -2714,6 +2714,23 @@ class StatuslineTest(EnrolledPairFixture):
             logged = handle.read()
         self.assertIn("First reading on personal after the swap: session 100% -> 90%", logged)
 
+    def test_an_idle_pane_repeating_an_old_figure_is_not_the_first_reading(self):
+        """A pane idle since early in the week repeats that week's figure every
+        minute, and it can be the first payload to arrive after a swap. Only a
+        reading that moves the record is a turn on the new account."""
+        reset = int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp())
+        self.write_account_snapshot("uuid-personal", 50, datetime.fromtimestamp(reset, timezone.utc))
+        self.run_statusline(self.payload(used=90))
+        self.write_login("uuid-personal")
+
+        for used in (40, 55):
+            self.run_statusline(self.payload(used=used, resets_at=reset))
+
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            logged = handle.read()
+        self.assertEqual(logged.count("First reading"), 1, logged)
+        self.assertIn("First reading on personal after the swap: session 50% -> 45%", logged)
+
     def test_a_window_replaced_by_a_newer_one_logs_what_it_had_left(self):
         """What is left at a reset is lost, and how much that is decides
         whether the thresholds are right."""
