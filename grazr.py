@@ -476,9 +476,9 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
     with _file_lock(os.path.join(state_dir, "readings.lock"), wait=True):
         previous = _latest_reading(paths, active)
         name = _name_of(enrolled, active)
-        for expired in core.replaced(previous, limits):
+        for expired in core.replaced(previous, limits, now):
             _log(state_dir, now, "%s %s window reset with %d%% left" % (name, expired.group, expired.remaining))
-        limits = core.merged(previous, limits)
+        limits = core.merged(previous, limits, now)
         # An idle pane repeats an old figure every minute and can be the first
         # payload after a swap. Only a reading that moves the record is a turn
         # on the new account.

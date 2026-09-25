@@ -15,13 +15,14 @@ FRESH = 95
 LAST_DAY_SECONDS = 24 * 60 * 60
 
 
-def merged(previous, current):
+def merged(previous, current, now):
     """A window already on record keeps the lowest headroom it has shown. Idle
     panes repeat old figures, and a repeat must not put headroom back. A newer
     window is taken as it comes. An older one comes from a pane that has not
-    caught up, and the window on record stays."""
+    caught up, and the window on record stays. One that has run out is not
+    taken at all, so a repeat cannot bring it back once it was dropped."""
     if not isinstance(previous, list):
-        return current
+        return _live(current, now)
     lowest = {(entry.group, entry.resets_at): entry.remaining for entry in previous}
     newest = {
         (entry.kind, entry.group): entry
@@ -38,19 +39,26 @@ def merged(previous, current):
                 remaining=min(entry.remaining, lowest.get((entry.group, entry.resets_at), entry.remaining))
             )
         )
-    return readings
+    return _live(readings, now)
 
 
-def replaced(previous, current):
-    """The windows on record that `current` supersedes with a newer one. Their
-    last reading is what expired unused."""
+def _live(limits, now):
+    return [entry for entry in limits if entry.resets_at is None or entry.resets_at > now]
+
+
+def replaced(previous, current, now):
+    """The windows on record that have run out, by the clock or because
+    `current` carries a newer one. Their last reading is what expired unused.
+    The clock has to count, since a payload drops a window the moment its
+    reset passes, and the newer window arrives only with the next request."""
     if not isinstance(previous, list):
         return []
     newest = {(entry.kind, entry.group): entry.resets_at for entry in current if entry.resets_at}
     return [
         entry
         for entry in previous
-        if entry.resets_at and entry.resets_at < newest.get((entry.kind, entry.group), entry.resets_at)
+        if entry.resets_at
+        and (entry.resets_at <= now or entry.resets_at < newest.get((entry.kind, entry.group), entry.resets_at))
     ]
 
 

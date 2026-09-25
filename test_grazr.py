@@ -2731,6 +2731,38 @@ class StatuslineTest(EnrolledPairFixture):
         self.assertEqual(logged.count("First reading"), 1, logged)
         self.assertIn("First reading on personal after the swap: session 50% -> 45%", logged)
 
+    def test_an_expired_window_the_payload_no_longer_carries_logs_what_it_had_left(self):
+        """Claude drops a window from the payload the moment its reset passes,
+        before the next window has arrived."""
+        now = datetime.now(timezone.utc)
+        self.write_account_snapshot("uuid-work", 40, now - timedelta(minutes=1))
+        weekly_only = json.dumps({"rate_limits": {"seven_day": {
+            "used_percentage": 30, "resets_at": int((now + timedelta(days=3)).timestamp()),
+        }}})
+
+        self.invoke(lambda runtime: grazr.statusline(runtime, weekly_only, detach=lambda: None))
+
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            logged = handle.read()
+        self.assertIn("work session window reset with 40% left", logged)
+
+    def test_an_idle_pane_cannot_put_an_expired_window_back_on_record(self):
+        """It repeats the old window every minute. Once dropped, that window
+        must stay dropped, or its leftover would be logged again."""
+        now = datetime.now(timezone.utc)
+        expired = int((now - timedelta(minutes=1)).timestamp())
+        self.write_account_snapshot("uuid-work", 40, datetime.fromtimestamp(expired, timezone.utc))
+        weekly_only = json.dumps({"rate_limits": {"seven_day": {
+            "used_percentage": 30, "resets_at": int((now + timedelta(days=3)).timestamp()),
+        }}})
+
+        for payload in (weekly_only, self.payload(used=60, resets_at=expired), weekly_only):
+            self.invoke(lambda runtime, p=payload: grazr.statusline(runtime, p, detach=lambda: None))
+
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            logged = handle.read()
+        self.assertEqual(logged.count("window reset"), 1, logged)
+
     def test_a_window_replaced_by_a_newer_one_logs_what_it_had_left(self):
         """What is left at a reset is lost, and how much that is decides
         whether the thresholds are right."""
