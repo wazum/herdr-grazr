@@ -4,6 +4,20 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.1 - 2026-09-25
+
+### Added
+
+- In the last day of an account's week, *grazr* goes back for what is left
+  there. A session swap hours before a weekly reset parked that remainder,
+  and 0.4.0 only came back for it once the week on your account was fresh.
+  Now it comes back once the parked session has room again and at least ten
+  points more than the weekly threshold remain. Less is not worth two swaps.
+- The first reading after a swap goes in the log, next to what the account
+  had when it was parked, as in "First reading on work after the swap:
+  session 100% -> 97%". The drop is the price of a swap: a token refresh and
+  a cold prompt cache on every pane. It has been a guess until now.
+
 ## 0.4.0 - 2026-09-25
 
 ### Added
