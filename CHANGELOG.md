@@ -4,6 +4,22 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.3 - 2026-09-25
+
+### Fixed
+
+- The leftover of a window that ran out is logged even when the payload no
+  longer carries it. Claude drops a window from the status line the moment
+  its reset passes, and the next window arrives only with the next request.
+  In between, the record lost the old window and had nothing to report. The
+  clock now counts, and a window that ran out never gets back on record.
+- The first-reading line after a swap no longer counts a payload that merely
+  lacks a window. A session window that ran out while the account was parked
+  is missing from the first payloads, and that passed for a turn. Only a
+  reading that lowers a window or opens a new one counts now.
+- A window the payload leaves out stays on record while it is live. It was
+  dropped, and a threshold crossing in it was invisible until it returned.
+
 ## 0.4.2 - 2026-09-25
 
 ### Fixed
