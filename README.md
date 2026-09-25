@@ -112,6 +112,7 @@ REMAINING_WEEKLY=20      # weekly windows get more margin, because losing one co
 ACCOUNTS="work personal" # preference order, first with headroom wins
 ENABLED=1
 DRY_RUN=0                # 1 = log the decision, do not swap
+MODEL_LIMITS=0           # 1 = also watch per-model weekly limits (see below)
 ```
 
 Start with `DRY_RUN=1` for a day. Every decision is written to `grazr.log` in
@@ -146,6 +147,27 @@ Herdr drops a toast while another one is on screen. For the "every account is
 low" message, *grazr* notices and says it again next time instead of assuming
 you read it. A rotation is announced once, so a dropped toast still leaves the
 swap in `grazr.log`.
+
+### Per-model weekly limits
+
+Some plans cap a model on its own, with a weekly allowance that runs out while
+the account still has plenty of its all-models week left. Claude does not put
+that cap in the status line, so by default *grazr* never sees it, and a pane
+on that model hits the wall on an account *grazr* thinks is fine.
+
+`MODEL_LIMITS=1` closes that gap. *grazr* then also asks Claude's usage
+endpoint, the one behind `/usage`, for the live account's per-model limits:
+once every two minutes at most, from the detached process that makes the
+swap, never from the status line itself. A per-model limit counts only while
+a pane is on that model, so running out of one model does not move a pane
+working on another. The status screen shows it as, say, `Fable weekly 0% left`.
+
+It is off by default for two reasons. The endpoint is undocumented, so a
+Claude release can change it without notice, and then *grazr* simply stops
+finding per-model readings. And *grazr* learns an account's per-model headroom
+only while that account is live. It never refreshes a parked token to ask, so
+a swap can land on an account that is also out of that model, and *grazr*
+moves on after the next reading.
 
 ## Swap on demand
 

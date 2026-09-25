@@ -19,7 +19,7 @@ import atomic
 import claude
 import grazr
 import stores
-from core import Account, Limit, decide, next_account
+from core import Account, Limit, decide, merged, next_account
 
 NOW = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
 LATER = datetime(2026, 9, 4, 17, 0, tzinfo=timezone.utc)
@@ -3136,6 +3136,230 @@ class FitnessTest(unittest.TestCase):
         here = os.path.dirname(os.path.abspath(__file__))
         with open(os.path.join(here, "grazr.py")) as source:
             self.assertNotIn(', "w")', source.read())
+
+
+# MODEL_LIMITS: per-model weekly limits from Claude's usage endpoint. The status
+# line carries only the five-hour and all-models weekly windows, so a per-model
+# cap used to run out with grazr seeing nothing.
+
+def _model_reset():
+    """Relative to the clock under test, so a shifted clock keeps it ahead."""
+    return datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=3)
+
+
+def _usage_reply(reset):
+    """The shape the endpoint returned for an account out of one model."""
+    return {
+        "five_hour": {"utilization": 8.0, "resets_at": None},
+        "limits": [
+            {"kind": "session", "group": "session", "percent": 8, "scope": None,
+             "resets_at": (reset - timedelta(days=2)).isoformat()},
+            {"kind": "weekly_all", "group": "weekly", "percent": 80, "scope": None,
+             "resets_at": reset.isoformat()},
+            {"kind": "weekly_scoped", "group": "weekly", "percent": 100, "severity": "critical",
+             "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None},
+             "resets_at": reset.isoformat(), "is_active": True},
+        ],
+    }
+
+
+LIVE_LOGIN = json.dumps({"claudeAiOauth": {"accessToken": "sk-ant-oat-test", "refreshToken": "r"}})
+
+
+def _model_limit(remaining, reset, scope="Fable"):
+    return Limit(kind="weekly_scoped", scope=scope, group="weekly", remaining=remaining, resets_at=reset)
+
+
+def _weekly(remaining, reset):
+    return Limit(kind="weekly_all", scope=None, group="weekly", remaining=remaining, resets_at=reset)
+
+
+class ScopedLimitsParseTest(unittest.TestCase):
+    def test_a_model_scoped_entry_becomes_a_weekly_limit_named_after_the_model(self):
+        reset = _model_reset()
+        self.assertEqual(claude.scoped_limits(_usage_reply(reset)), [_model_limit(0, reset)])
+
+    def test_unscoped_entries_are_left_to_the_status_line_which_is_fresher(self):
+        kinds = [entry.kind for entry in claude.scoped_limits(_usage_reply(_model_reset()))]
+        self.assertNotIn("weekly_all", kinds)
+
+    def test_a_reply_without_limits_reads_as_nothing(self):
+        self.assertIsNone(claude.scoped_limits({"five_hour": {}}))
+        self.assertIsNone(claude.scoped_limits(None))
+
+    def test_a_malformed_entry_is_skipped_rather_than_fatal(self):
+        reply = {"limits": [{"scope": {"model": {"display_name": "Fable"}}, "percent": "x"}]}
+        self.assertEqual(claude.scoped_limits(reply), [])
+
+    def test_only_a_claude_ai_login_has_a_token_to_ask_with(self):
+        self.assertEqual(claude.access_token(LIVE_LOGIN), "sk-ant-oat-test")
+        for blob in (None, "LIVE-WORK", "{}", json.dumps({"claudeAiOauth": {}})):
+            self.assertIsNone(claude.access_token(blob))
+
+    def test_no_token_means_no_request(self):
+        opened = []
+        self.assertIsNone(
+            claude.fetch_scoped_limits("LIVE-WORK", opener=lambda *a, **k: opened.append(a))
+        )
+        self.assertEqual(opened, [])
+
+
+class MergeKeepsScopesApartTest(unittest.TestCase):
+    def test_a_spent_model_never_lowers_the_all_models_window_it_shares_a_reset_with(self):
+        reset = _model_reset()
+        kept = merged([_weekly(50, reset), _model_limit(0, reset)], [_weekly(50, reset)])
+        self.assertEqual(kept, [_weekly(50, reset)])
+
+
+class ModelLimitsFixture(EnrolledPairFixture):
+    def setUp(self):
+        super().setUp()
+        self.write_config('ACCOUNTS="work personal"\nMODEL_LIMITS=1\n')
+        self.reset = _model_reset()
+
+    def payload(self, model="Opus 5.5"):
+        return json.dumps({
+            "model": {"id": "x", "display_name": model},
+            "rate_limits": {"seven_day": {"used_percentage": 50, "resets_at": self.reset.timestamp()}},
+        })
+
+    def write_snapshot(self, identifier, snapshot):
+        path = os.path.join(self.state_dir, "accounts", identifier + ".json")
+        with open(path) as handle:
+            stored = json.load(handle)
+        stored["snapshot"] = accounts.snapshot_to_json(snapshot)
+        with open(path, "w") as handle:
+            json.dump(stored, handle)
+
+    def snapshot_of(self, identifier):
+        with open(os.path.join(self.state_dir, "accounts", identifier + ".json")) as handle:
+            return json.load(handle)["snapshot"]
+
+    def run_statusline(self, payload):
+        return self.invoke(
+            lambda runtime: grazr.statusline(runtime, payload, detach=lambda: grazr.decide(runtime))
+        )
+
+
+class StatuslineKeepsModelLimitTest(ModelLimitsFixture):
+    def test_a_status_line_reading_keeps_the_model_limit_and_the_weekly_headroom(self):
+        self.write_snapshot("uuid-work", [_weekly(50, self.reset), _model_limit(0, self.reset)])
+
+        self.run_statusline(self.payload(model="Opus 5.5"))
+
+        stored = {(e["kind"], e["scope"]): e["remaining"] for e in self.snapshot_of("uuid-work")}
+        self.assertEqual(
+            (stored[("weekly_scoped", "Fable")], stored[("weekly_all", None)]), (0, 50)
+        )
+
+
+class ModelLimitBindsOnlyWhileInUseTest(ModelLimitsFixture):
+    def test_running_out_of_a_model_does_not_move_a_pane_on_another(self):
+        self.write_snapshot("uuid-work", [_weekly(50, self.reset), _model_limit(0, self.reset)])
+
+        self.run_statusline(self.payload(model="Opus 5.5"))
+
+        self.assertEqual(self.rotations, [])
+
+    def test_running_out_of_a_model_moves_a_pane_on_it(self):
+        self.write_snapshot("uuid-work", [_weekly(50, self.reset), _model_limit(0, self.reset)])
+
+        self.run_statusline(self.payload(model="Fable 5.1"))
+
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
+
+
+class DecideAsksForModelLimitsTest(ModelLimitsFixture):
+    def runtime(self):
+        return super().runtime()._replace(store=FakeStore(live=LIVE_LOGIN))
+
+    def test_the_detached_step_reads_the_model_limit_and_swaps_while_it_is_in_use(self):
+        self.write_snapshot("uuid-work", [_weekly(50, self.reset)])
+        asked = []
+
+        def fake_fetch(blob):
+            asked.append(claude.access_token(blob))
+            return claude.scoped_limits(_usage_reply(self.reset))
+
+        with mock.patch.object(claude, "fetch_scoped_limits", fake_fetch):
+            self.run_statusline(self.payload(model="Fable 5.1"))
+
+        self.assertEqual(
+            (asked, self.rotations[0][2:4]), (["sk-ant-oat-test"], ("uuid-work", "uuid-personal"))
+        )
+
+    def test_one_request_per_interval_whatever_the_number_of_messages(self):
+        self.write_snapshot("uuid-work", [_weekly(50, self.reset)])
+        asked = []
+
+        with mock.patch.object(claude, "fetch_scoped_limits", lambda blob: asked.append(1) or []):
+            self.run_statusline(self.payload())
+            self.run_statusline(self.payload())
+
+        self.assertEqual(len(asked), 1)
+
+    def test_a_failed_request_changes_nothing(self):
+        self.write_snapshot("uuid-work", [_weekly(50, self.reset)])
+
+        with mock.patch.object(claude, "fetch_scoped_limits", lambda blob: None):
+            self.run_statusline(self.payload(model="Fable 5.1"))
+
+        self.assertEqual(
+            (self.rotations, [e["kind"] for e in self.snapshot_of("uuid-work")]),
+            ([], ["weekly_all"]),
+        )
+
+    def test_turning_the_setting_off_drops_model_limits_at_the_next_reading(self):
+        self.write_config('ACCOUNTS="work personal"\n')
+        self.write_snapshot("uuid-work", [_weekly(50, self.reset), _model_limit(0, self.reset)])
+
+        self.run_statusline(self.payload(model="Fable 5.1"))
+
+        self.assertEqual(
+            ([e["kind"] for e in self.snapshot_of("uuid-work")], self.rotations),
+            (["weekly_all"], []),
+        )
+
+    def test_nothing_is_asked_while_the_setting_is_off(self):
+        self.write_config('ACCOUNTS="work personal"\n')
+        self.write_snapshot("uuid-work", [_weekly(50, self.reset)])
+        asked = []
+
+        with mock.patch.object(claude, "fetch_scoped_limits", lambda blob: asked.append(1) or []):
+            self.run_statusline(self.payload(model="Fable 5.1"))
+
+        self.assertEqual(asked, [])
+
+
+class ManualSwapSkipsSpentModelTest(ModelLimitsFixture):
+    def setUp(self):
+        super().setUp()
+        with open(os.path.join(self.state_dir, "accounts", "uuid-third.json"), "w") as f:
+            json.dump({"name": "third", "oauthAccount": {"accountUuid": "uuid-third"}}, f)
+        self.write_config('ACCOUNTS="work personal third"\nMODEL_LIMITS=1\n')
+        self.write_snapshot("uuid-personal", [_weekly(80, self.reset), _model_limit(0, self.reset)])
+
+    def test_the_key_skips_an_account_out_of_the_model_in_use(self):
+        grazr._note_model(self.state_dir, self.payload(model="Fable 5.1"), datetime.now(timezone.utc))
+
+        self.invoke(grazr.swap)
+
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-third"))
+
+    def test_the_key_ignores_a_model_no_pane_is_using(self):
+        grazr._note_model(self.state_dir, self.payload(model="Opus 5.5"), datetime.now(timezone.utc))
+
+        self.invoke(grazr.swap)
+
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
+
+
+class StatusNamesTheModelTest(unittest.TestCase):
+    def test_a_model_limit_is_described_by_its_model(self):
+        reset = _model_reset()
+        self.assertIn(
+            "Fable weekly 0% left", grazr._describe([_weekly(50, reset), _model_limit(0, reset)])
+        )
 
 
 if __name__ == "__main__":

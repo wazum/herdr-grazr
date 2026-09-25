@@ -4,6 +4,8 @@ import json
 import os
 import shutil
 import time
+import urllib.error
+import urllib.request
 from collections import namedtuple
 from datetime import datetime, timezone
 
@@ -121,6 +123,83 @@ def statusline_limits(payload):
         ]
     except (AttributeError, KeyError, TypeError, ValueError):
         return None
+
+
+# Per-model weekly limits, for MODEL_LIMITS=1. The status line carries only the
+# five-hour and all-models weekly windows, so a per-model cap runs out with no
+# reading at all. The usage endpoint behind `/usage` does report it, as a
+# `weekly_scoped` entry naming the model. It is asked for the live login only,
+# and its token is never refreshed here: an expired one means no reading this
+# time, and Claude refreshes it on its next request.
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+USAGE_TIMEOUT_SECONDS = 10
+
+
+def access_token(blob):
+    """The live login's access token, or None when the blob is not a claude.ai
+    login (an API key, a test double, nothing at all)."""
+    try:
+        token = json.loads(blob)["claudeAiOauth"]["accessToken"]
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return None
+    return token if isinstance(token, str) and token else None
+
+
+def scoped_limits(reply):
+    """Per-model limits from a usage reply, as Limits whose scope is the model's
+    display name. Unscoped entries are left to the status line, which is fresher.
+    None when the reply has no readable `limits`."""
+    try:
+        entries = reply["limits"]
+        if not isinstance(entries, list):
+            return None
+    except (TypeError, KeyError):
+        return None
+    limits = []
+    for entry in entries:
+        try:
+            model = ((entry.get("scope") or {}).get("model") or {}).get("display_name")
+            percent = entry["percent"]
+        except (AttributeError, KeyError, TypeError):
+            continue
+        if not isinstance(model, str) or not model:
+            continue
+        if not isinstance(percent, (int, float)) or isinstance(percent, bool):
+            continue
+        try:
+            resets_at = accounts.parse_time(entry.get("resets_at"))
+        except (TypeError, ValueError, AttributeError):
+            resets_at = None
+        limits.append(core.Limit(
+            kind=entry.get("kind") or "weekly_scoped",
+            scope=model,
+            group=entry.get("group") or "weekly",
+            remaining=max(0, 100 - percent),
+            resets_at=resets_at,
+        ))
+    return limits
+
+
+USAGE_USER_AGENT = "grazr (+https://github.com/wazum/herdr-grazr)"
+
+
+def fetch_scoped_limits(blob, opener=urllib.request.urlopen):
+    """Ask the usage endpoint for the login in `blob`. None on any failure: no
+    token, an expired one, the network, an unexpected shape."""
+    token = access_token(blob)
+    if token is None:
+        return None
+    request = urllib.request.Request(USAGE_URL, headers={
+        "Authorization": "Bearer " + token,
+        "anthropic-beta": "oauth-2025-04-20",
+        "User-Agent": USAGE_USER_AGENT,
+    })
+    try:
+        with opener(request, timeout=USAGE_TIMEOUT_SECONDS) as response:
+            reply = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError, UnicodeDecodeError):
+        return None
+    return scoped_limits(reply)
 
 
 def _from_unix(seconds):

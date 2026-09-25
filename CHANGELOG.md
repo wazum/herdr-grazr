@@ -4,6 +4,19 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- `MODEL_LIMITS=1` watches per-model weekly limits too. Some plans cap a model
+  on its own, and that cap runs out while the all-models week still has room.
+  Claude leaves it out of the status line, so *grazr* never saw it and a pane
+  on that model hit the wall. With the setting on, the detached process that
+  makes the swap also asks Claude's usage endpoint for the live account's
+  per-model limits, at most every two minutes. Such a limit counts only while
+  a pane is on that model. It is off by default, since the endpoint is
+  undocumented.
+
 ## 0.3.7 - 2026-09-25
 
 ### Fixed
