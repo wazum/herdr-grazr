@@ -4,6 +4,22 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- An account the server refuses is left for the next one. A lapsed
+  subscription, a billing problem, an organisation that turned Claude Code off,
+  a revoked login or a rate limit ends the turn without a status-line reading,
+  so *grazr* saw nothing and kept every pane on the dead account. It now also
+  connects to Claude's `StopFailure` hook. On an account-level error it marks
+  the account failed, skips it until it is enrolled again or seen answering,
+  and moves on, to the one with the most left if none has headroom. A failed
+  account gets no threshold rotation, weekly handover or swap key either. On a
+  rate limit the account waits for its window to reset. Only the first of many
+  failing panes acts, and failures in the first minute after a swap are put
+  down to the account that left. Run the connect action once to add the hook.
+
 ## 0.4.5 - 2026-09-28
 
 ### Fixed

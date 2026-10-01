@@ -17,6 +17,7 @@ from unittest import mock
 import accounts
 import atomic
 import claude
+import core
 import grazr
 import stores
 from core import Account, Limit, decide, next_account
@@ -3438,6 +3439,442 @@ class FitnessTest(unittest.TestCase):
         here = os.path.dirname(os.path.abspath(__file__))
         with open(os.path.join(here, "grazr.py")) as source:
             self.assertNotIn(', "w")', source.read())
+
+
+class FailureHookTest(EnrolledPairFixture):
+    """Claude's StopFailure hook: the only word grazr gets that the server
+    refused a request, since the status line never runs for one."""
+
+    def fire(self, error):
+        detached = []
+        payload = json.dumps({"hook_event_name": "StopFailure", "error": error, "session_id": "s"})
+        self.invoke(lambda runtime: grazr.failure(runtime, payload, detach=lambda: detached.append(error)))
+        return detached
+
+    def test_an_account_level_error_starts_a_recovery(self):
+        for error in grazr.BLOCKING_ERRORS + (grazr.RATE_LIMIT_ERROR,):
+            with self.subTest(error=error):
+                self.assertEqual(self.fire(error), [error])
+
+    def test_an_error_that_says_nothing_about_the_account_is_ignored(self):
+        """Another account would be just as overloaded."""
+        for error in ("overloaded", "server_error", "invalid_request", "max_output_tokens", "unknown"):
+            with self.subTest(error=error):
+                self.assertEqual(self.fire(error), [])
+
+    def test_enabled_off_leaves_it_alone(self):
+        self.write_config('ACCOUNTS="work personal"\nENABLED=0\n')
+
+        self.assertEqual(self.fire("oauth_org_not_allowed"), [])
+
+    def test_garbage_on_stdin_is_ignored(self):
+        code, _ = self.invoke(lambda runtime: grazr.failure(runtime, "not json", detach=self.fail))
+
+        self.assertEqual(code, 0)
+
+    def test_the_recovery_runs_detached_with_the_account_that_failed(self):
+        started = []
+        payload = json.dumps({"error": "billing_error"})
+
+        with mock.patch.object(grazr.subprocess, "Popen", lambda *a, **k: started.append((a, k))):
+            self.invoke(lambda runtime: grazr.failure(runtime, payload))
+
+        (argv,), keywords = started[0]
+        self.assertEqual(argv[-3:], ["recover", "billing_error", "uuid-work"])
+        self.assertTrue(keywords["start_new_session"])
+
+    def test_the_command_line_reaches_the_recovery(self):
+        with mock.patch.object(grazr, "recover", lambda **k: k):
+            self.assertEqual(
+                grazr._dispatch(["grazr.py", "recover", "billing_error", "uuid-work"]),
+                {"error": "billing_error", "failed": "uuid-work"},
+            )
+
+
+class RecoverTest(EnrolledPairFixture):
+    """The detached half of the failure hook."""
+
+    def recover(self, error="oauth_org_not_allowed", failed="uuid-work"):
+        return self.invoke(lambda runtime: grazr.recover(runtime, error=error, failed=failed))
+
+    def blocked(self):
+        return grazr._read_blocked(self.state_dir, datetime.now(timezone.utc))
+
+    def logged(self):
+        try:
+            with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+                return handle.read()
+        except OSError:
+            return ""
+
+    def enrol_spare(self):
+        with open(os.path.join(self.state_dir, "accounts", "uuid-spare.json"), "w") as handle:
+            json.dump({"name": "spare", "oauthAccount": {"accountUuid": "uuid-spare"}}, handle)
+        self.write_config('ACCOUNTS="work personal spare"\n')
+
+    def test_a_refused_account_is_left_for_the_next(self):
+        self.recover()
+
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
+        self.assertIn("Rotated work -> personal after oauth_org_not_allowed", self.logged())
+        self.assertEqual(self.blocked()["uuid-work"]["reason"], "oauth_org_not_allowed")
+        self.assertEqual(self.tags, ["personal"])
+
+    def test_a_refused_account_is_never_rotated_back_to(self):
+        """Its last reading may show plenty of headroom, and that is exactly
+        how a lapsed account gets picked."""
+        self.recover()
+        self.write_login("uuid-personal")
+        self.rotations.clear()
+
+        code, printed = self.invoke(grazr.swap)
+
+        self.assertEqual((code, self.rotations), (1, []))
+        self.assertIn("Nothing to swap to", printed)
+
+    def test_the_threshold_decision_skips_a_refused_account(self):
+        grazr._block(self.state_dir, "uuid-personal", "billing_error", None, datetime.now(timezone.utc))
+        self.write_account_snapshot("uuid-work", remaining=1)
+
+        self.invoke(grazr.decide)
+
+        self.assertEqual(self.rotations, [])
+
+    def test_the_most_left_fallback_skips_a_refused_account(self):
+        """When every account is low, the one with the most left takes over,
+        unless the server refused it."""
+        self.enrol_spare()
+        self.write_account_snapshot("uuid-work", remaining=1)
+        self.write_account_snapshot("uuid-personal", remaining=12)
+        self.write_account_snapshot("uuid-spare", remaining=14)
+        grazr._block(self.state_dir, "uuid-spare", "billing_error", None, datetime.now(timezone.utc))
+
+        self.invoke(grazr.decide)
+
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
+
+    def test_a_refused_account_gets_no_weekly_handover(self):
+        """Its week ending sooner is no reason to go there."""
+        now = datetime.now(timezone.utc)
+        self.park("uuid-work", [("weekly", 99, now + timedelta(days=6))])
+        self.park("uuid-personal", [("weekly", 60, now + timedelta(hours=10))])
+        grazr._block(self.state_dir, "uuid-personal", "billing_error", None, now)
+
+        self.invoke(grazr.decide)
+
+        self.assertEqual(self.rotations, [])
+
+    def test_the_weekly_handover_still_works_otherwise(self):
+        now = datetime.now(timezone.utc)
+        self.park("uuid-work", [("weekly", 99, now + timedelta(days=6))])
+        self.park("uuid-personal", [("weekly", 60, now + timedelta(hours=10))])
+
+        self.invoke(grazr.decide)
+
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
+
+    def park(self, identifier, windows):
+        path = os.path.join(self.state_dir, "accounts", identifier + ".json")
+        with open(path) as handle:
+            stored = json.load(handle)
+        stored["snapshot"] = [
+            {"kind": group, "scope": None, "group": group, "remaining": remaining,
+             "resets_at": resets_at.isoformat()}
+            for group, remaining, resets_at in windows
+        ]
+        with open(path, "w") as handle:
+            json.dump(stored, handle)
+
+    def test_any_account_that_answers_beats_one_that_refuses(self):
+        """Below the threshold is still serving requests. The fallback margin
+        is for trading two low accounts, not for leaving a dead one."""
+        self.write_account_snapshot("uuid-work", remaining=90)
+        self.write_account_snapshot("uuid-personal", remaining=3)
+
+        self.recover()
+
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
+
+    def test_a_failure_from_an_account_no_longer_live_does_nothing(self):
+        """Every pane and teammate fails together, and only the first acts."""
+        self.write_login("uuid-personal")
+
+        self.recover(failed="uuid-work")
+
+        self.assertEqual((self.rotations, self.blocked()), ([], {}))
+
+    def test_a_failure_just_after_arriving_belongs_to_the_account_that_left(self):
+        """A request already out when the swap landed fails on the new login's
+        watch, and must not get it blocked too."""
+        grazr._record_arrival(self.state_dir, "uuid-work", datetime.now(timezone.utc))
+
+        self.recover()
+
+        self.assertEqual((self.rotations, self.blocked()), ([], {}))
+
+    def test_an_arrival_long_ago_is_no_excuse(self):
+        long_ago = datetime.now(timezone.utc) - timedelta(seconds=grazr.FAILURE_GRACE_SECONDS + 1)
+        grazr._record_arrival(self.state_dir, "uuid-work", long_ago)
+
+        self.recover()
+
+        self.assertEqual(len(self.rotations), 1)
+
+    def test_every_rotation_records_its_arrival(self):
+        self.write_account_snapshot("uuid-work", remaining=1)
+
+        self.invoke(grazr.decide)
+
+        self.assertTrue(grazr._recently_arrived(self.state_dir, "uuid-personal", datetime.now(timezone.utc)))
+
+    def test_nowhere_to_go_is_said_once(self):
+        self.write_config('ACCOUNTS="work"\n')
+
+        for _ in range(3):
+            self.recover()
+
+        self.assertEqual(self.rotations, [])
+        self.assertEqual(self.logged().count("no other account can take over"), 1, self.logged())
+        self.assertEqual([title for title, _ in self.notices], ["grazr: nowhere to go"])
+        self.assertIn("uuid-work", self.blocked())
+
+    def test_every_other_account_refused_too_is_nowhere_to_go(self):
+        grazr._block(self.state_dir, "uuid-personal", "billing_error", None, datetime.now(timezone.utc))
+
+        self.recover()
+
+        self.assertEqual(self.rotations, [])
+        self.assertIn("work failed with oauth_org_not_allowed, and no other account can take over", self.logged())
+
+    def test_a_rate_limit_spends_the_lowest_window_until_it_resets(self):
+        """The account comes back by itself when that window resets."""
+        self.write_account_snapshot("uuid-work", remaining=40)
+
+        self.recover(error="rate_limit")
+
+        with open(os.path.join(self.state_dir, "accounts", "uuid-work.json")) as handle:
+            snapshot = json.load(handle)["snapshot"]
+        self.assertEqual(snapshot[0]["remaining"], 0)
+        self.assertNotIn("uuid-work", self.blocked())
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
+        self.assertIn("Rotated work -> personal after rate_limit", self.logged())
+
+    def test_a_rate_limit_keeps_the_fallback_margin(self):
+        """A rate-limited account still answers once its window resets, so two
+        low accounts are weighed as usual rather than swapped for a point."""
+        self.write_account_snapshot("uuid-work", remaining=40)
+        self.write_account_snapshot("uuid-personal", remaining=5)
+
+        self.recover(error="rate_limit")
+
+        self.assertEqual(self.rotations, [])
+        self.assertIn("Every account is below your thresholds", self.logged())
+
+    def test_a_rate_limit_with_no_window_on_record_waits_a_fixed_time(self):
+        self.recover(error="rate_limit")
+
+        until = self.blocked()["uuid-work"]["until"]
+        expected = datetime.now(timezone.utc).timestamp() + grazr.RATE_LIMIT_FALLBACK_SECONDS
+        self.assertAlmostEqual(until, expected, delta=60)
+        later = datetime.now(timezone.utc) + timedelta(seconds=grazr.RATE_LIMIT_FALLBACK_SECONDS + 1)
+        self.assertEqual(grazr._read_blocked(self.state_dir, later), {})
+        self.assertEqual(len(self.rotations), 1)
+
+    def test_honours_dry_run(self):
+        self.write_config('ACCOUNTS="work personal"\nDRY_RUN=1\n')
+
+        self.recover()
+
+        self.assertEqual(self.rotations, [])
+        self.assertIn("DRY_RUN: would rotate work -> personal", self.logged())
+
+    def test_a_refusal_mid_swap_is_logged(self):
+        self.refusal = "Claude is writing its config, so grazr is not swapping now"
+
+        self.recover()
+
+        self.assertIn("work failed with oauth_org_not_allowed. Not rotating: Claude is writing", self.logged())
+        self.assertEqual(self.tags, [])
+
+    def test_an_unknown_error_from_the_command_line_does_nothing(self):
+        self.recover(error="overloaded")
+
+        self.assertEqual((self.rotations, self.blocked()), ([], {}))
+
+    def test_the_status_screen_names_a_refused_account(self):
+        grazr._block(self.state_dir, "uuid-personal", "billing_error", None, datetime.now(timezone.utc))
+
+        with mock.patch.object(grazr, "read_key", lambda: "q"):
+            _, printed = self.invoke(grazr.status)
+
+        self.assertIn("FAILED billing_error", printed)
+        self.assertIn("until enrolled again or seen answering", printed)
+
+
+class UnblockTest(EnrolledPairFixture):
+    """A refused account comes back once it is seen answering, or enrolled."""
+
+    def setUp(self):
+        super().setUp()
+        self.reset = (datetime.now(timezone.utc) + timedelta(hours=2)).replace(microsecond=0)
+        self.write_account_snapshot("uuid-work", remaining=60, resets_at=self.reset)
+        reading = grazr._latest_reading(self.runtime().paths, "uuid-work")
+        grazr._block(self.state_dir, "uuid-work", "billing_error", reading, datetime.now(timezone.utc))
+
+    def statusline(self, used, resets_at=None):
+        payload = json.dumps({"rate_limits": {"five_hour": {
+            "used_percentage": used, "resets_at": (resets_at or self.reset).timestamp(),
+        }}})
+        return self.invoke(lambda runtime: grazr.statusline(runtime, payload, detach=lambda: None))
+
+    def blocked(self):
+        return grazr._read_blocked(self.state_dir, datetime.now(timezone.utc))
+
+    def test_the_same_figures_again_prove_nothing(self):
+        """A pane repeats its last reading after a refusal too."""
+        self.statusline(used=40)
+
+        self.assertIn("uuid-work", self.blocked())
+
+    def test_more_usage_in_the_same_window_proves_it_answers(self):
+        self.statusline(used=45)
+
+        self.assertNotIn("uuid-work", self.blocked())
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            self.assertIn("work answers again", handle.read())
+
+    def test_a_newer_window_proves_it_answers(self):
+        self.statusline(used=1, resets_at=self.reset + timedelta(hours=5))
+
+        self.assertNotIn("uuid-work", self.blocked())
+
+    def test_enrolling_it_again_lifts_it(self):
+        with mock.patch.object(claude, "enrol", lambda *a: "uuid-work"), mock.patch(
+            "builtins.input", lambda prompt: "work"
+        ), mock.patch.object(claude, "install_statusline", lambda *a: ""), mock.patch.object(
+            claude, "install_failure_hook", lambda *a: ""
+        ):
+            _, printed = self.invoke(lambda runtime: grazr._enrol_from(runtime, "/isolated"))
+
+        self.assertNotIn("uuid-work", self.blocked())
+        self.assertIn("back in rotation", printed)
+
+
+class MostLeftTest(unittest.TestCase):
+
+    def test_the_other_with_the_most_on_its_lowest_window(self):
+        now = datetime.now(timezone.utc)
+        later = now + timedelta(hours=1)
+        accounts_ = [
+            Account("a", "a", [Limit("session", None, "session", 1, later)]),
+            Account("b", "b", [Limit("session", None, "session", 9, later),
+                               Limit("weekly", None, "weekly", 4, later)]),
+            Account("c", "c", [Limit("session", None, "session", 7, later)]),
+        ]
+
+        self.assertEqual(core.most_left("a", accounts_, now, THRESHOLDS).id, "c")
+
+    def test_no_other_account_is_none(self):
+        now = datetime.now(timezone.utc)
+
+        self.assertIsNone(core.most_left("a", [Account("a", "a", [])], now, THRESHOLDS))
+
+
+class FailureHookInstallTest(unittest.TestCase):
+    COMMAND = "HERDR_PLUGIN_STATE_DIR=/s python3 /p/grazr.py failure"
+
+    def setUp(self):
+        self.config_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.config_dir, True)
+
+    def write(self, settings):
+        with open(os.path.join(self.config_dir, "settings.json"), "w") as handle:
+            json.dump(settings, handle)
+
+    def read(self):
+        with open(os.path.join(self.config_dir, "settings.json")) as handle:
+            return json.load(handle)
+
+    def ours(self, command=None):
+        return {"matcher": claude.FAILURE_HOOK_MATCHER,
+                "hooks": [{"type": "command", "command": command or self.COMMAND}]}
+
+    def test_it_joins_the_hooks_already_there(self):
+        theirs = {"matcher": "rate_limit", "hooks": [{"type": "command", "command": "notify-me"}]}
+        self.write({"hooks": {"StopFailure": [theirs], "Stop": [{"hooks": []}]}, "model": "x"})
+
+        self.assertEqual(claude.install_failure_hook(self.config_dir, self.COMMAND), "Failure hook connected")
+
+        settings = self.read()
+        self.assertEqual(settings["hooks"]["StopFailure"], [theirs, self.ours()])
+        self.assertEqual(settings["hooks"]["Stop"], [{"hooks": []}])
+        self.assertEqual(settings["model"], "x")
+        self.assertTrue(claude.failure_hook_installed(self.config_dir, self.COMMAND))
+
+    def test_installing_twice_changes_nothing(self):
+        claude.install_failure_hook(self.config_dir, self.COMMAND)
+
+        self.assertEqual(
+            claude.install_failure_hook(self.config_dir, self.COMMAND), "Failure hook already connected"
+        )
+        self.assertEqual(len(self.read()["hooks"]["StopFailure"]), 1)
+
+    def test_a_checkout_at_a_new_path_replaces_the_old_hook(self):
+        self.write({"hooks": {"StopFailure": [self.ours("python3 /old/grazr.py failure")]}})
+
+        claude.install_failure_hook(self.config_dir, self.COMMAND)
+
+        self.assertEqual(self.read()["hooks"]["StopFailure"], [self.ours()])
+
+    def test_uninstall_takes_only_its_own(self):
+        theirs = {"hooks": [{"type": "command", "command": "notify-me"}]}
+        self.write({"hooks": {"StopFailure": [theirs, self.ours()]}})
+
+        self.assertEqual(claude.uninstall_failure_hook(self.config_dir), "Failure hook disconnected")
+
+        self.assertEqual(self.read()["hooks"]["StopFailure"], [theirs])
+
+    def test_uninstall_leaves_no_empty_shell(self):
+        self.write({"hooks": {"StopFailure": [self.ours()]}, "model": "x"})
+
+        claude.uninstall_failure_hook(self.config_dir)
+
+        self.assertEqual(self.read(), {"model": "x"})
+
+    def test_uninstall_without_it_says_so(self):
+        self.write({"model": "x"})
+
+        self.assertEqual(claude.uninstall_failure_hook(self.config_dir), "Failure hook was not connected")
+
+    def test_hooks_it_cannot_read_are_not_touched(self):
+        self.write({"hooks": ["weird"]})
+
+        with self.assertRaises(RuntimeError):
+            claude.install_failure_hook(self.config_dir, self.COMMAND)
+        self.assertEqual(self.read(), {"hooks": ["weird"]})
+
+    def test_the_connect_action_installs_both(self):
+        state_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, state_dir, True)
+        runtime = grazr.Runtime(
+            paths=claude.Paths(
+                config_path=os.path.join(self.config_dir, ".claude.json"),
+                config_dir=self.config_dir,
+                accounts_dir=state_dir,
+            ),
+            store=FakeStore(), state_dir=state_dir,
+            config=grazr.Config(thresholds=THRESHOLDS, accounts=[], enabled=True, dry_run=False),
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            grazr.install(runtime)
+        settings = self.read()
+        self.assertTrue(settings["statusLine"]["command"].endswith(" statusline"))
+        self.assertTrue(settings["hooks"]["StopFailure"][0]["hooks"][0]["command"].endswith(" failure"))
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            grazr.uninstall(runtime)
+        self.assertNotIn("hooks", self.read())
 
 
 if __name__ == "__main__":

@@ -1,7 +1,8 @@
 """grazr — rotate to a fresh Claude account before the current one runs out.
 
 Entry points: statusline (Claude's status-line command, after every message),
-decide (detached from it), tag (a Herdr event), install, uninstall and swap
+decide (detached from it), failure (Claude's StopFailure hook) and recover
+(detached from it), tag (a Herdr event), install, uninstall and swap
 (Herdr actions), enrol and status (popup panes). All Herdr I/O lives here.
 Claude's own files live in claude.py, the accounts grazr enrolled in
 accounts.py, where credentials are kept in stores.py, and the decision itself
@@ -19,7 +20,7 @@ import sys
 import termios
 import tty
 from collections import namedtuple
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import accounts
 import atomic
@@ -51,6 +52,22 @@ PREVIOUS_STATUSLINE = "statusline.previous.json"
 UNREADABLE_PENDING = "statusline.unreadable.json"
 # Only a live session can miss twice, so the armed set never needs to be large.
 UNREADABLE_PENDING_CAP = 64
+
+# A turn Claude ended on an API error, from its StopFailure hook. The first
+# group says the account itself is unusable, so grazr leaves it out until it is
+# enrolled again or a status line shows it answering. A rate limit only lasts
+# until its window resets.
+BLOCKED = "blocked.json"            # {account id: {reason, at, until, reading}}
+BLOCKED_LOCK = "blocked.lock"
+LAST_ROTATION = "last_rotation.json"  # {"to": account id, "at": unix time}
+BLOCKING_ERRORS = ("oauth_org_not_allowed", "billing_error", "account_on_hold", "authentication_failed")
+RATE_LIMIT_ERROR = "rate_limit"
+# Every pane and teammate on the old account fails at once, and a request
+# already out when the swap landed fails after it. Those failures belong to the
+# account that left, so they are not held against the one that just arrived.
+FAILURE_GRACE_SECONDS = 60
+# A rate limit with no window on record to pin it to.
+RATE_LIMIT_FALLBACK_SECONDS = 3600
 
 TAG = "grazr"
 ESCAPE = "\x1b"
@@ -158,9 +175,10 @@ def _herdr(spawn, *arguments):
     return completed.stdout if completed.returncode == 0 else ""
 
 
-def act_on(decision, runtime, active_id, limits, enrolled=(), now=None):
+def act_on(decision, runtime, active_id, limits, enrolled=(), now=None, why=None):
     """Carry out what core.decide concluded, and report it. Returns the line
-    that goes to stdout, which Herdr keeps in `herdr plugin log`."""
+    that goes to stdout, which Herdr keeps in `herdr plugin log`. `why` names
+    the reason for a rotation when the reading cannot: a refused account."""
     paths, store, state_dir, config = runtime
     dry_run = config.dry_run
     if decision == "stay":
@@ -208,13 +226,15 @@ def act_on(decision, runtime, active_id, limits, enrolled=(), now=None):
     note = claude.rotate(paths, store, active_id, next_id, limits)
     accounts.mark_first_reading_due(paths, next_id)
     now = now or datetime.now(timezone.utc)
-    low = core.shortfall(limits or [], now, config.thresholds)
-    if low:
-        why = ", %s %d%% < %d%%" % (low.group, low.remaining, config.thresholds[low.group])
-    elif core.expiring_sooner(limits or [], active_id, enrolled, now, config.thresholds) == next_id:
-        why = ", its week ends sooner"
-    else:
-        why = ""
+    _record_arrival(state_dir, next_id, now)
+    if why is None:
+        low = core.shortfall(limits or [], now, config.thresholds)
+        if low:
+            why = ", %s %d%% < %d%%" % (low.group, low.remaining, config.thresholds[low.group])
+        elif core.expiring_sooner(limits or [], active_id, enrolled, now, config.thresholds) == next_id:
+            why = ", its week ends sooner"
+        else:
+            why = ""
     line = "Rotated %s -> %s%s%s" % (name_of(active_id), name_of(next_id), why, note or "")
     shown = notify(
         "grazr: now on %s" % name_of(next_id),
@@ -473,6 +493,7 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
     if _left_behind(limits, active, enrolled):
         return 0
     now = datetime.now(timezone.utc)
+    _unblock_if_answering(state_dir, active, limits, enrolled, now)
     with _file_lock(os.path.join(state_dir, "readings.lock"), wait=True):
         previous = _latest_reading(paths, active)
         name = _name_of(enrolled, active)
@@ -497,7 +518,7 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
                 _log_leftovers(state_dir, now, parked.name, expired)
                 accounts.record_snapshot(paths, parked.id, core.merged(parked.snapshot, [], now))
     if not core.needs_rotation(limits, now, config.thresholds) and not core.expiring_sooner(
-        limits, active, enrolled, now, config.thresholds
+        limits, active, _usable(state_dir, enrolled, active, now), now, config.thresholds
     ):
         return 0
     if not any(entry.id == active for entry in enrolled):
@@ -621,7 +642,7 @@ def decide(runtime=None):
         limits = _latest_reading(paths, active)
         if limits is None:
             return 0
-        enrolled = accounts.load(paths, config.accounts)
+        enrolled = _usable(state_dir, accounts.load(paths, config.accounts), active, now)
         decision = core.decide(limits, active, enrolled, now, config.thresholds)
         # rotate refuses this too, but a raised error suits the person who just
         # pressed a key, not every message of every pane.
@@ -646,6 +667,232 @@ def decide(runtime=None):
     if line and (moved or not _logged_last(state_dir, line)):
         _log(state_dir, now, line)
     return 0
+
+
+def failure(runtime=None, payload=None, detach=None):
+    """Claude's StopFailure hook: a turn ended on an API error. The status line
+    never runs for a request the server refused, so this is the only word grazr
+    gets that the account stopped answering. The hook is fire-and-forget, and
+    the rotation runs detached like `decide`, keyed to the account that was
+    live when the hook fired."""
+    payload = sys.stdin.read() if payload is None else payload
+    runtime = runtime or _runtime()
+    paths, _, state_dir, config = runtime
+    if not config.enabled:
+        return 0
+    try:
+        error = json.loads(payload).get("error")
+    except (ValueError, AttributeError):
+        return 0
+    if error not in BLOCKING_ERRORS and error != RATE_LIMIT_ERROR:
+        return 0
+    active = claude.active_account(paths)
+    if active is None:
+        return 0
+    (detach or (lambda: _detach_recover(state_dir, error, active)))()
+    return 0
+
+
+def _detach_recover(state_dir, error, active):
+    with open(os.path.join(state_dir, LOG), "a") as log:
+        subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "recover", error, active],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
+            start_new_session=True,
+        )
+
+
+def recover(runtime=None, error=None, failed=None, now=None):
+    """Take the account that failed out of rotation and move on.
+
+    Every pane and teammate on that account fails together, so only the first
+    acts: the rest find another account live, or the one that failed arrived a
+    moment ago and their requests were already out before it did. Unlike
+    `decide`, this waits for the lock, since no later message brings a retry."""
+    runtime = runtime or _runtime()
+    paths, store, state_dir, config = runtime
+    now = now or datetime.now(timezone.utc)
+    if error not in BLOCKING_ERRORS and error != RATE_LIMIT_ERROR:
+        return 0
+    everyone = accounts.load(paths, [])
+    with _file_lock(os.path.join(state_dir, "rotate.lock"), wait=True):
+        active = claude.active_account(paths)
+        if active is None or active != failed or _recently_arrived(state_dir, active, now):
+            return 0
+        reason = "%s failed with %s" % (_name_of(everyone, active), error)
+        limits = _latest_reading(paths, active)
+        if error == RATE_LIMIT_ERROR:
+            limits, pinned = _mark_spent(paths, state_dir, active, limits, now)
+        else:
+            _block(state_dir, active, error, limits, now)
+            pinned = False
+        enrolled = _usable(state_dir, accounts.load(paths, config.accounts), active, now)
+        decision = _after_failure(limits, active, enrolled, now, config.thresholds, pinned)
+        if isinstance(decision, tuple):
+            override = claude.settings_auth_override(paths.config_dir)
+            if override:
+                decision = ("override", override)
+        if decision == "unenrolled":
+            # The others may exist and be refused too, so "enrol a second
+            # account" would send you the wrong way.
+            line = "%s, and no other account can take over" % reason
+            if not _announce_once(state_dir, "failed:%s:%s" % (active, error), "grazr: nowhere to go", line):
+                line = None
+        else:
+            try:
+                line = act_on(decision, runtime, active, limits, enrolled, now, why=" after %s" % error)
+            except RuntimeError as refusal:
+                line = "%s. Not rotating: %s" % (reason, refusal)
+                decision = "stay"
+
+    moved = _moved(decision, config.dry_run)
+    if moved:
+        tag_all(_name_of(everyone, decision[1]))
+    if line and (moved or not _logged_last(state_dir, line)):
+        _log(state_dir, now, line)
+    return 0
+
+
+def _after_failure(limits, active, enrolled, now, thresholds, pinned):
+    """Where to go from an account the server refused. A rate limit pinned to a
+    window is an ordinary reading below the threshold, so the usual decision
+    holds, fallback margin and all. An account that refuses outright is worse
+    than any that answers, so the one with the most left takes over even
+    without headroom."""
+    if pinned:
+        return core.decide(limits, active, enrolled, now, thresholds)
+    chosen = core.next_account(active, enrolled, now, thresholds)
+    if chosen is None:
+        best = core.most_left(active, enrolled, now, thresholds)
+        chosen = best.id if best else None
+    return ("rotate", chosen) if chosen else "unenrolled"
+
+
+def _record_arrival(state_dir, identifier, now):
+    try:
+        atomic.write(
+            os.path.join(state_dir, LAST_ROTATION),
+            json.dumps({"to": identifier, "at": now.timestamp()}),
+        )
+    except OSError:
+        pass
+
+
+def _recently_arrived(state_dir, identifier, now):
+    try:
+        with open(os.path.join(state_dir, LAST_ROTATION)) as handle:
+            arrival = json.load(handle)
+        return (
+            arrival["to"] == identifier
+            and now.timestamp() - float(arrival["at"]) < FAILURE_GRACE_SECONDS
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def _read_blocked(state_dir, now):
+    """Accounts the server refused, minus any whose wait has run out."""
+    try:
+        with open(os.path.join(state_dir, BLOCKED)) as handle:
+            blocked = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(blocked, dict):
+        return {}
+    return {
+        identifier: entry
+        for identifier, entry in blocked.items()
+        if isinstance(entry, dict)
+        and not (isinstance(entry.get("until"), (int, float)) and entry["until"] <= now.timestamp())
+    }
+
+
+def _block(state_dir, identifier, reason, limits, now, until=None):
+    with _file_lock(os.path.join(state_dir, BLOCKED_LOCK), wait=True):
+        blocked = _read_blocked(state_dir, now)
+        blocked[identifier] = {
+            "reason": reason,
+            "at": now.timestamp(),
+            "until": until.timestamp() if until else None,
+            # What the account showed when it failed, so a later reading can
+            # prove it answers again.
+            "reading": accounts.snapshot_to_json(limits),
+        }
+        atomic.write(os.path.join(state_dir, BLOCKED), json.dumps(blocked))
+
+
+def _unblock(state_dir, identifier, now):
+    """Whether there was anything to lift."""
+    with _file_lock(os.path.join(state_dir, BLOCKED_LOCK), wait=True):
+        blocked = _read_blocked(state_dir, now)
+        if blocked.pop(identifier, None) is None:
+            return False
+        atomic.write(os.path.join(state_dir, BLOCKED), json.dumps(blocked))
+        return True
+
+
+def _usable(state_dir, enrolled, active, now):
+    """Enrolled accounts grazr may move to. The active one stays in the list,
+    since the decision needs it, and a blocked account is never a target."""
+    blocked = _read_blocked(state_dir, now)
+    return [entry for entry in enrolled if entry.id == active or entry.id not in blocked]
+
+
+def _mark_spent(paths, state_dir, active, limits, now):
+    """A rate limit means a window ran out ahead of the reading on record. The
+    lowest open window is taken to be it and set to nothing, so the account
+    comes back on its own when that window resets. With no open window to pin
+    it to, the account waits a fixed time instead. Returns the reading and
+    whether a window holds the limit."""
+    windows = [
+        entry for entry in (limits if isinstance(limits, list) else [])
+        if entry.resets_at and entry.resets_at > now
+    ]
+    if not windows:
+        _block(
+            state_dir, active, RATE_LIMIT_ERROR, limits, now,
+            until=now + timedelta(seconds=RATE_LIMIT_FALLBACK_SECONDS),
+        )
+        return limits, False
+    lowest = min(windows, key=lambda entry: (entry.remaining, entry.resets_at))
+    spent = [entry._replace(remaining=0) if entry is lowest else entry for entry in limits]
+    with _file_lock(os.path.join(state_dir, "readings.lock"), wait=True):
+        accounts.record_snapshot(paths, active, spent)
+    return spent, True
+
+
+def _unblock_if_answering(state_dir, active, reported, enrolled, now):
+    """A status line only carries usage from an answered request. Usage below
+    what the account showed when it failed, or a window newer than any it
+    had, means it serves requests again. An unchanged reading proves nothing:
+    a pane repeats its last figures after a refusal too."""
+    entry = _read_blocked(state_dir, now).get(active)
+    if not entry or entry.get("until"):
+        return
+    before = accounts.snapshot_from_json(entry.get("reading")) or []
+    if not _used_since(before, reported):
+        return
+    if _unblock(state_dir, active, now):
+        _log(state_dir, now, "%s answers again, so grazr uses it again" % _name_of(enrolled, active))
+
+
+def _used_since(before, reported):
+    def window(entry):
+        return entry.group, entry.scope, entry.resets_at.replace(microsecond=0)
+
+    recorded = {window(entry): entry.remaining for entry in before if entry.resets_at}
+    for entry in reported:
+        if not entry.resets_at:
+            continue
+        key = window(entry)
+        if key in recorded:
+            if entry.remaining < recorded[key]:
+                return True
+            continue
+        known = [resets for group, scope, resets in recorded if (group, scope) == key[:2]]
+        if known and key[2] > max(known):
+            return True
+    return False
 
 
 def _latest_reading(paths, active):
@@ -762,9 +1009,12 @@ def main(argv):
 def _dispatch(argv):
     entry_points = {
         "statusline": statusline, "decide": decide, "install": install, "uninstall": uninstall,
-        "status": status, "enrol": enrol, "swap": swap, "tag": tag,
+        "status": status, "enrol": enrol, "swap": swap, "tag": tag, "failure": failure,
     }
     command = argv[1] if len(argv) > 1 else ""
+    if command == "recover" and len(argv) == 4:
+        # Detached from the failure hook, with the error and the account it hit.
+        return recover(error=argv[2], failed=argv[3])
     if command not in entry_points:
         print("usage: grazr.py %s" % "|".join(entry_points), file=sys.stderr)
         return 2
@@ -800,12 +1050,14 @@ def tag(runtime=None):
 def install(runtime=None):
     paths, _, state_dir, _ = runtime or _runtime()
     print(claude.install_statusline(paths.config_dir, _record_path(state_dir), _shim_command(state_dir)))
+    print(claude.install_failure_hook(paths.config_dir, _failure_command(state_dir)))
     return 0
 
 
 def uninstall(runtime=None):
     paths, _, state_dir, _ = runtime or _runtime()
     print(claude.uninstall_statusline(paths.config_dir, _record_path(state_dir)))
+    print(claude.uninstall_failure_hook(paths.config_dir))
     return 0
 
 
@@ -813,14 +1065,20 @@ def _record_path(state_dir):
     return os.path.join(state_dir, PREVIOUS_STATUSLINE)
 
 
-def _shim_command(state_dir):
+def _shim_command(state_dir, entry="statusline"):
     """The status line runs in Claude's environment, not herdr's, so the
     command carries the directories herdr would have set."""
-    return "HERDR_PLUGIN_STATE_DIR=%s HERDR_PLUGIN_CONFIG_DIR=%s python3 %s statusline" % (
+    return "HERDR_PLUGIN_STATE_DIR=%s HERDR_PLUGIN_CONFIG_DIR=%s python3 %s %s" % (
         shlex.quote(state_dir),
         shlex.quote(os.path.dirname(_config_path())),
         shlex.quote(os.path.abspath(__file__)),
+        entry,
     )
+
+
+def _failure_command(state_dir):
+    """The StopFailure hook runs in Claude's environment too."""
+    return _shim_command(state_dir, "failure")
 
 
 def swap(runtime=None):
@@ -836,7 +1094,7 @@ def swap(runtime=None):
         if active is None:
             return _refuse_swap("Not logged in, nothing to swap from")
         limits = _latest_reading(paths, active)
-        enrolled = accounts.load(paths, config.accounts)
+        enrolled = _usable(state_dir, accounts.load(paths, config.accounts), active, now)
         next_id = core.next_account(active, enrolled, now, config.thresholds)
         if next_id is None:
             # The account you are on is never a swap target, so its reset says
@@ -879,10 +1137,13 @@ def status(runtime=None):
              "   DRY_RUN" if config.dry_run else ""))
 
     enrolled = accounts.load(paths, config.accounts)
+    blocked = _read_blocked(state_dir, datetime.now(timezone.utc))
     for account in enrolled:
         marker = "*" if account.id == active else " "
         parked = "parked" if accounts.has_parked_credential(store, account.id) else "NO CREDENTIAL"
         print("%s %-16s %-14s %s" % (marker, account.name, parked, _describe(account.snapshot)))
+        if account.id in blocked:
+            print("  %-16s %s" % ("", _describe_blocked(blocked[account.id])))
 
     for name in config.accounts:
         if not any(account.name == name for account in enrolled):
@@ -891,6 +1152,8 @@ def status(runtime=None):
     print("\nactive account headroom: %s" % _describe(_latest_reading(paths, active)))
     if not claude.statusline_installed(paths.config_dir, _record_path(state_dir)):
         print("  The status line is not grazr's, so grazr sees no usage. Run the connect action")
+    if not claude.failure_hook_installed(paths.config_dir, _failure_command(state_dir)):
+        print("  The failure hook is not connected, so an account the server refuses stays put. Run the connect action")
     if active and not any(account.id == active for account in enrolled):
         # Enrolled but left out of ACCOUNTS is the likelier mistake, and calling
         # that "not enrolled" sends you off to enrol it a second time.
@@ -905,6 +1168,16 @@ def status(runtime=None):
     print("\n(* = active)   press any key to close")
     read_key()
     return 0
+
+
+def _describe_blocked(entry):
+    def clock(stamp):
+        return datetime.fromtimestamp(stamp, timezone.utc).astimezone().strftime("%a %H:%M")
+
+    since = clock(entry["at"]) if isinstance(entry.get("at"), (int, float)) else "unknown"
+    if isinstance(entry.get("until"), (int, float)):
+        return "FAILED %s at %s, skipped until %s" % (entry.get("reason"), since, clock(entry["until"]))
+    return "FAILED %s at %s, skipped until enrolled again or seen answering" % (entry.get("reason"), since)
 
 
 def _last_decision(state_dir):
@@ -977,8 +1250,11 @@ def _enrol_from(runtime, source):
         print("Could not enrol: %s" % error)
         return 1
     print("\nEnrolled %s as %s" % (name, identifier))
+    if _unblock(state_dir, identifier, datetime.now(timezone.utc)):
+        print("It had failed before, and is back in rotation")
     print('Add it to ACCOUNTS in %s' % _config_path())
     print(claude.install_statusline(paths.config_dir, _record_path(state_dir), _shim_command(state_dir)))
+    print(claude.install_failure_hook(paths.config_dir, _failure_command(state_dir)))
     return 0
 
 

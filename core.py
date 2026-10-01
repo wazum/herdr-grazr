@@ -92,13 +92,22 @@ def decide(limits, active, accounts, now, thresholds):
     if chosen:
         return "rotate", chosen
     # "Every account is spent" would be a claim about accounts that do not exist.
-    others = [entry for entry in accounts if entry.id != active]
-    if not others:
+    best = most_left(active, accounts, now, thresholds)
+    if best is None:
         return "unenrolled"
-    best = max(others, key=lambda entry: _worst_window(entry.snapshot, now, thresholds))
     if _worst_window(best.snapshot, now, thresholds) >= _worst_window(limits, now, thresholds) + FALLBACK_MARGIN:
         return "rotate", best.id
     return "exhausted"
+
+
+def most_left(active, accounts, now, thresholds):
+    """The other account with the most left on its lowest window, or None when
+    there is no other. Meant for when none has headroom, so every snapshot
+    holds a window below its threshold."""
+    others = [entry for entry in accounts if entry.id != active]
+    if not others:
+        return None
+    return max(others, key=lambda entry: _worst_window(entry.snapshot, now, thresholds))
 
 
 def _worst_window(limits, now, thresholds):

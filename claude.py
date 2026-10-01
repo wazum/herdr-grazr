@@ -364,6 +364,79 @@ def statusline_installed(config_dir, record_path):
         return False
 
 
+# The StopFailure errors that say the account itself is the problem. Claude
+# matches the hook's `matcher` against the `error` field as a regex.
+FAILURE_HOOK_EVENT = "StopFailure"
+FAILURE_HOOK_MATCHER = (
+    "oauth_org_not_allowed|billing_error|account_on_hold|authentication_failed|rate_limit"
+)
+
+
+def install_failure_hook(config_dir, command):
+    """Add grazr's StopFailure hook, next to whatever hooks are there. A grazr
+    hook from an older checkout is replaced rather than doubled."""
+    settings = _read_settings(config_dir)
+    hooks = settings.get("hooks")
+    if hooks is None:
+        hooks = settings["hooks"] = {}
+    if not isinstance(hooks, dict):
+        raise RuntimeError("settings.json has a \"hooks\" that is not an object, not touching it")
+    groups = hooks.get(FAILURE_HOOK_EVENT) or []
+    if not isinstance(groups, list):
+        raise RuntimeError("settings.json has a %s that is not a list, not touching it" % FAILURE_HOOK_EVENT)
+    wanted = {"matcher": FAILURE_HOOK_MATCHER, "hooks": [{"type": "command", "command": command}]}
+    if wanted in groups:
+        return "Failure hook already connected"
+    hooks[FAILURE_HOOK_EVENT] = [group for group in groups if not _is_our_failure_group(group)] + [wanted]
+    _write_settings(config_dir, settings)
+    return "Failure hook connected"
+
+
+def uninstall_failure_hook(config_dir):
+    settings = _read_settings(config_dir)
+    hooks = settings.get("hooks")
+    groups = hooks.get(FAILURE_HOOK_EVENT) if isinstance(hooks, dict) else None
+    if not isinstance(groups, list) or not any(_is_our_failure_group(group) for group in groups):
+        return "Failure hook was not connected"
+    kept = [group for group in groups if not _is_our_failure_group(group)]
+    if kept:
+        hooks[FAILURE_HOOK_EVENT] = kept
+    else:
+        del hooks[FAILURE_HOOK_EVENT]
+    if not hooks:
+        del settings["hooks"]
+    _write_settings(config_dir, settings)
+    return "Failure hook disconnected"
+
+
+def failure_hook_installed(config_dir, command):
+    try:
+        hooks = _read_settings(config_dir).get("hooks")
+    except RuntimeError:
+        return False
+    groups = hooks.get(FAILURE_HOOK_EVENT) if isinstance(hooks, dict) else None
+    return isinstance(groups, list) and any(
+        isinstance(group, dict)
+        and any(
+            isinstance(hook, dict) and hook.get("command") == command
+            for hook in group.get("hooks") or []
+        )
+        for group in groups
+    )
+
+
+def _is_our_failure_group(group):
+    """A group grazr added holds only its own command, so the whole group goes."""
+    if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+        return False
+    return bool(group["hooks"]) and all(
+        isinstance(hook, dict)
+        and "grazr.py" in str(hook.get("command", ""))
+        and str(hook.get("command", "")).rstrip().endswith(" failure")
+        for hook in group["hooks"]
+    )
+
+
 def _is_ours(entry, recorded):
     command = entry.get("command", "") if isinstance(entry, dict) else ""
     return command == recorded["shim"] or (

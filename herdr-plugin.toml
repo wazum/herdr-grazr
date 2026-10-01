@@ -19,14 +19,14 @@ command = ["python3", "grazr.py", "swap"]
 [[actions]]
 id = "install"
 title = "grazr: connect to Claude's status line"
-description = "Put grazr into Claude's status line, keeping the one you have, so it sees every message's usage"
+description = "Put grazr into Claude's status line, keeping the one you have, and add its StopFailure hook, so it sees every message's usage and every refused account"
 contexts = ["global", "workspace"]
 command = ["python3", "grazr.py", "install"]
 
 [[actions]]
 id = "uninstall"
 title = "grazr: disconnect from Claude's status line"
-description = "Put the status line back the way it was; grazr then sees no usage"
+description = "Put the status line back the way it was and remove the StopFailure hook; grazr then sees no usage"
 contexts = ["global", "workspace"]
 command = ["python3", "grazr.py", "uninstall"]
 
