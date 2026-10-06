@@ -782,6 +782,9 @@ def _dispatch(argv):
         "status": status, "enrol": enrol, "swap": swap, "tag": tag,
     }
     command = argv[1] if len(argv) > 1 else ""
+    if command == "swap" and len(argv) == 3:
+        # A named account, from a script or another client. The action passes none.
+        return swap(target=argv[2])
     if command not in entry_points:
         print("usage: grazr.py %s" % "|".join(entry_points), file=sys.stderr)
         return 2
@@ -840,9 +843,14 @@ def _shim_command(state_dir):
     )
 
 
-def swap(runtime=None):
+def swap(runtime=None, target=None):
     """A swap the user asked for, from a Herdr key. The active account's
-    headroom is not consulted, and ENABLED gates the status line only."""
+    headroom is not consulted, and ENABLED gates the status line only.
+
+    `target` names the account to move to, by name or id, instead of letting
+    grazr pick. Naming it is the choice, so it is taken from every enrolled
+    account, listed in ACCOUNTS or not, and its headroom is not consulted
+    either."""
     runtime = runtime or _runtime()
     paths, store, state_dir, config = runtime
     now = datetime.now(timezone.utc)
@@ -853,8 +861,18 @@ def swap(runtime=None):
         if active is None:
             return _refuse_swap("Not logged in, nothing to swap from")
         limits = _latest_reading(paths, active)
-        enrolled = accounts.load(paths, config.accounts)
-        next_id = core.next_account(active, enrolled, now, config.thresholds)
+        if target is not None:
+            enrolled = accounts.load(paths, [])
+            next_id = next(
+                (entry.id for entry in enrolled if target in (entry.name, entry.id)), None
+            )
+            if next_id is None:
+                return _refuse_swap("No enrolled account is named %s" % target)
+            if next_id == active:
+                return _refuse_swap("Already on %s" % _name_of(enrolled, active))
+        else:
+            enrolled = accounts.load(paths, config.accounts)
+            next_id = core.next_account(active, enrolled, now, config.thresholds)
         if next_id is None:
             # The account you are on is never a swap target, so its reset says
             # nothing about when this key does something.

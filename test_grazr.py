@@ -2525,6 +2525,73 @@ class SwapTest(EnrolledPairFixture):
         self.assertEqual(self.rotations, [])
         self.assertIn("Busy", printed)
 
+    def enrol_spare(self):
+        """A third account, enrolled but left out of ACCOUNTS."""
+        with open(os.path.join(self.state_dir, "accounts", "uuid-spare.json"), "w") as f:
+            json.dump({"name": "spare", "oauthAccount": {"accountUuid": "uuid-spare"}}, f)
+
+    def swap_to(self, target):
+        return self.invoke(lambda runtime: grazr.swap(runtime, target=target))
+
+    def test_a_named_account_is_the_one_it_moves_to(self):
+        """A client that lets you pick the account, rather than grazr, needs a
+        way to say which. ACCOUNTS order does not come into it."""
+        self.enrol_spare()
+
+        code, printed = self.swap_to("spare")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-spare"))
+        self.assertIn("Rotated work -> spare", printed)
+        self.assertEqual(self.tags, ["spare"])
+
+    def test_a_named_account_can_be_given_by_id(self):
+        self.enrol_spare()
+
+        self.swap_to("uuid-spare")
+
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-spare"))
+
+    def test_a_named_account_is_taken_without_asking_about_its_headroom(self):
+        """Naming the account is the choice, as pressing the key is."""
+        self.write_account_snapshot("uuid-personal", remaining=0)
+
+        code, _ = self.swap_to("personal")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
+
+    def test_a_name_nobody_enrolled_is_refused_on_screen(self):
+        code, printed = self.swap_to("nobody")
+
+        self.assertEqual(code, 1)
+        self.assertEqual(self.rotations, [])
+        self.assertIn("No enrolled account is named nobody", printed)
+        self.assertEqual(len(self.notices), 1)
+
+    def test_naming_the_account_you_are_on_swaps_nothing(self):
+        code, printed = self.swap_to("work")
+
+        self.assertEqual(code, 1)
+        self.assertEqual(self.rotations, [])
+        self.assertIn("Already on work", printed)
+
+    def test_a_named_swap_honours_dry_run(self):
+        self.write_config('ACCOUNTS="work personal"\nDRY_RUN=1\n')
+
+        code, printed = self.swap_to("personal")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.rotations, [])
+        self.assertIn("DRY_RUN: would rotate work -> personal", printed)
+
+    def test_the_command_line_hands_the_name_to_the_swap(self):
+        with mock.patch.object(grazr, "swap", return_value=0) as swap:
+            self.assertEqual(grazr.main(["grazr.py", "swap", "personal"]), 0)
+            grazr.main(["grazr.py", "swap"])
+
+        self.assertEqual(swap.call_args_list, [mock.call(target="personal"), mock.call()])
+
 
 class StatuslineTest(EnrolledPairFixture):
     """grazr sits in Claude's status line, so it sees every message's reading

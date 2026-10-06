@@ -196,6 +196,24 @@ automatic path. If every other account is spent, the key swaps nothing and says
 so in a toast, naming the account that frees up first and the window you are
 waiting on, and in `herdr plugin log`.
 
+To move to one account in particular, name it. Outside Herdr, hand it the
+directories Herdr would, as the status line does:
+
+```sh
+HERDR_PLUGIN_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr/plugins/wazum.grazr" \
+HERDR_PLUGIN_CONFIG_DIR="$(herdr plugin config-dir wazum.grazr)" \
+HERDR_BIN_PATH="$(command -v herdr)" \
+python3 path/to/grazr.py swap personal
+```
+
+The swap is the same one the key makes, with the same lock, toast, log and
+`DRY_RUN`, only the target is yours. Any enrolled account can be named, by name
+or id, listed in `ACCOUNTS` or not, and its headroom is not consulted either.
+Naming the account you are on, or one nobody enrolled, swaps nothing and says
+so. If the account you name is below a threshold, the next message moves you
+on again, unless `ENABLED=0`. Herdr actions take no arguments, so this one is
+for scripts and for clients that let you pick the account.
+
 ## After a swap
 
 <p align="center">

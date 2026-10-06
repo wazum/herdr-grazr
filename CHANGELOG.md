@@ -4,6 +4,15 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- `grazr.py swap <account>` moves to the account you name, by name or id,
+  instead of the first one with headroom. It is the same swap the key makes,
+  with the same lock, toast, log and `DRY_RUN`. Any enrolled account can be
+  named, and its headroom is not consulted. Issue 4.
+
 ## 0.4.9 - 2026-10-07
 
 ### Fixed
