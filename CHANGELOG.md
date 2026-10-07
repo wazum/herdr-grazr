@@ -8,10 +8,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- `grazr.py swap <account>` moves to the account you name, by name or id,
-  instead of the first one with headroom. It is the same swap the key makes,
-  with the same lock, toast, log and `DRY_RUN`. Any enrolled account can be
-  named, and its headroom is not consulted. Issue 4.
+- `grazr.py swap <account>` moves to the account you name, by name or id.
+  It is the same swap the key makes: same lock, toast, log and `DRY_RUN`.
+  Any enrolled account can be named. An account below your thresholds is
+  refused, like the key does, because the next message would move you off
+  it again. Issue 4.
 
 ## 0.4.9 - 2026-10-07
 

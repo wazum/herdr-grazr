@@ -2552,14 +2552,18 @@ class SwapTest(EnrolledPairFixture):
 
         self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-spare"))
 
-    def test_a_named_account_is_taken_without_asking_about_its_headroom(self):
-        """Naming the account is the choice, as pressing the key is."""
-        self.write_account_snapshot("uuid-personal", remaining=0)
+    def test_a_named_account_below_its_thresholds_is_refused_like_the_key_would(self):
+        """Moving there would last one message: the automatic path moves off a
+        spent account at the next reading. Two swaps for nothing, so the named
+        swap refuses as the key does, and says when the account frees up."""
+        reset = datetime.now(timezone.utc) + timedelta(hours=2)
+        self.write_account_snapshot("uuid-personal", remaining=0, resets_at=reset)
 
-        code, _ = self.swap_to("personal")
+        code, printed = self.swap_to("personal")
 
-        self.assertEqual(code, 0)
-        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
+        self.assertEqual(code, 1)
+        self.assertEqual(self.rotations, [])
+        self.assertIn("personal is below your thresholds, earliest reset %s" % clock(reset), printed)
 
     def test_a_name_nobody_enrolled_is_refused_on_screen(self):
         code, printed = self.swap_to("nobody")

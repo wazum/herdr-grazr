@@ -2,7 +2,8 @@
 
 Entry points: statusline (Claude's status-line command, after every message),
 decide (detached from it), tag (a Herdr event), install, uninstall and swap
-(Herdr actions), enrol and status (popup panes). All Herdr I/O lives here.
+(Herdr actions; swap also takes an account name from the command line), enrol
+and status (popup panes). All Herdr I/O lives here.
 Claude's own files live in claude.py, the accounts grazr enrolled in
 accounts.py, where credentials are kept in stores.py, and the decision itself
 is core.decide.
@@ -847,10 +848,9 @@ def swap(runtime=None, target=None):
     """A swap the user asked for, from a Herdr key. The active account's
     headroom is not consulted, and ENABLED gates the status line only.
 
-    `target` names the account to move to, by name or id, instead of letting
-    grazr pick. Naming it is the choice, so it is taken from every enrolled
-    account, listed in ACCOUNTS or not, and its headroom is not consulted
-    either."""
+    `target` names the account to move to, by name or id. Any enrolled
+    account can be named, in ACCOUNTS or not. One below its thresholds is
+    refused, like the key does: the next reading would move off it again."""
     runtime = runtime or _runtime()
     paths, store, state_dir, config = runtime
     now = datetime.now(timezone.utc)
@@ -870,6 +870,16 @@ def swap(runtime=None, target=None):
                 return _refuse_swap("No enrolled account is named %s" % target)
             if next_id == active:
                 return _refuse_swap("Already on %s" % _name_of(enrolled, active))
+            chosen = next(entry for entry in enrolled if entry.id == next_id)
+            if core.next_account(active, [chosen], now, config.thresholds) is None:
+                # The next reading would move off it again: two swaps for one
+                # message.
+                return _refuse_swap(
+                    "%s is below your thresholds, earliest reset %s"
+                    % (chosen.name, _earliest_reset(
+                        now, config.thresholds, {chosen.id: chosen.snapshot}, enrolled
+                    ))
+                )
         else:
             enrolled = accounts.load(paths, config.accounts)
             next_id = core.next_account(active, enrolled, now, config.thresholds)

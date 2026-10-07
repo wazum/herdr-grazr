@@ -206,13 +206,14 @@ HERDR_BIN_PATH="$(command -v herdr)" \
 python3 path/to/grazr.py swap personal
 ```
 
-The swap is the same one the key makes, with the same lock, toast, log and
-`DRY_RUN`, only the target is yours. Any enrolled account can be named, by name
-or id, listed in `ACCOUNTS` or not, and its headroom is not consulted either.
-Naming the account you are on, or one nobody enrolled, swaps nothing and says
-so. If the account you name is below a threshold, the next message moves you
-on again, unless `ENABLED=0`. Herdr actions take no arguments, so this one is
-for scripts and for clients that let you pick the account.
+It is the same swap the key makes: same lock, toast, log and `DRY_RUN`. Only
+the target is yours. You can name any enrolled account, by name or id, in
+`ACCOUNTS` or not. If you name the account you are on, or one that is not
+enrolled, nothing happens and *grazr* says so. The same goes for an account
+below your thresholds: the next message would move you off it again, so
+*grazr* refuses, like the key does, and tells you when that account frees up.
+Herdr actions take no arguments, so this one is for scripts and for clients
+that let you pick the account.
 
 ## After a swap
 
