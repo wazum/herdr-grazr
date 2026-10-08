@@ -35,10 +35,13 @@ be cancelled, so a pane that burns through its last percent inside one message
 can still hit the wall. What to do then is under "What it will not do".
 
 **Requires** two or more Claude subscriptions that are all yours. The badges
-above carry the rest.
+above carry the rest. Herdr is the comfortable way to run it, with a key, a
+toast and a sidebar tag. It also runs on its own, see [Without
+Herdr](#without-herdr).
 
 [How it works](#how-it-works) ·
 [Install](#install) ·
+[Without Herdr](#without-herdr) ·
 [Swap on demand](#swap-on-demand) ·
 [After a swap](#after-a-swap) ·
 [What it will not do](#what-it-will-not-do) ·
@@ -171,6 +174,28 @@ Herdr drops a toast while another one is on screen. For the "every account is
 low" message, *grazr* notices and says it again next time instead of assuming
 you read it. A rotation is announced once, so a dropped toast still leaves the
 swap in `grazr.log`.
+
+## Without Herdr
+
+*grazr* needs Python 3 and the `claude` binary, nothing else. Herdr adds the
+install command, the key, the toast and the sidebar tag. Without it, state and
+config live in `~/.grazr`, and every entry point is a plain command:
+
+```sh
+git clone https://github.com/wazum/herdr-grazr.git
+cd herdr-grazr
+python3 grazr.py enrol      # once per account: s for this login, l for another
+python3 grazr.py install    # connect Claude's status line, keeping yours
+$EDITOR ~/.grazr/config.env # thresholds and ACCOUNTS, as above
+```
+
+From then on *grazr* rotates on its own. `python3 grazr.py status` shows the
+accounts and what they have left, `python3 grazr.py swap` moves to the next
+account with headroom, `swap <account>` to the one you name, and `uninstall`
+puts your status line back. A `git pull` is the update.
+
+What you do without: a swap is written to `grazr.log` only, since the toast is
+Herdr's. Make the swap command a shell alias if you want a key.
 
 ## Swap on demand
 
