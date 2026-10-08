@@ -534,7 +534,7 @@ def _cost(parked, limits):
 def _report_unenrolled_active(state_dir, active):
     """A login grazr never enrolled has no account file to keep its reading, so
     the decision would find nothing and stay without a word."""
-    line = "This login is not enrolled, so grazr cannot rotate away on its own. Use the swap key or enrol it"
+    line = "This login is not enrolled, so grazr cannot rotate away on its own. Swap by hand or enrol it"
     if _announce_once(state_dir, "unenrolled-active:%s" % active, "grazr: login not enrolled", line):
         _log(state_dir, datetime.now(timezone.utc), line)
 
@@ -812,7 +812,7 @@ def tag(runtime=None):
     else:
         tag_all(named)
     if not claude.statusline_installed(paths.config_dir, _record_path(state_dir)):
-        line = "The status line is not grazr's, so grazr sees no usage. Run the connect action"
+        line = "The status line is not grazr's, so grazr sees no usage. Run install to connect it"
         if _announce_once(state_dir, "statusline-missing", "grazr: status line not connected", line):
             print(line)
     return 0
@@ -935,14 +935,14 @@ def status(runtime=None):
 
     print("\nactive account headroom: %s" % _describe(_latest_reading(paths, active)))
     if not claude.statusline_installed(paths.config_dir, _record_path(state_dir)):
-        print("  The status line is not grazr's, so grazr sees no usage. Run the connect action")
+        print("  The status line is not grazr's, so grazr sees no usage. Run install to connect it")
     if active and not any(account.id == active for account in enrolled):
         # Enrolled but left out of ACCOUNTS is the likelier mistake, and calling
         # that "not enrolled" sends you off to enrol it a second time.
         if any(account.id == active for account in accounts.load(paths, [])):
             print("  This login is enrolled but missing from ACCOUNTS, so grazr can rotate away but not back")
         else:
-            print("  This login is not enrolled, so only the swap key moves off it. Enrol it to rotate on its own")
+            print("  This login is not enrolled, so only a swap by hand moves off it. Enrol it to rotate on its own")
 
     last = _last_decision(state_dir)
     if last:

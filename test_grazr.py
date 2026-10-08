@@ -2668,7 +2668,7 @@ class StatuslineTest(EnrolledPairFixture):
         with mock.patch.object(grazr, "read_key", lambda: "q"):
             _, printed = self.invoke(grazr.status)
 
-        self.assertIn("This login is not enrolled, so only the swap key moves off it", printed)
+        self.assertIn("This login is not enrolled, so only a swap by hand moves off it", printed)
 
     def test_without_a_previous_status_line_the_bar_stays_empty(self):
         _, printed = self.run_statusline(self.payload(used=90))
