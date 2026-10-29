@@ -28,7 +28,14 @@ import claude
 import core
 import stores
 
-Config = namedtuple("Config", "thresholds accounts enabled dry_run")
+# `account_thresholds` maps an account name, as written in ACCOUNTS, to the
+# thresholds it sets for itself. `return_margin` is how many points more an
+# account must have before going to it is worth a swap.
+Config = namedtuple(
+    "Config",
+    "thresholds accounts enabled dry_run account_thresholds return_margin",
+    defaults=({}, core.FALLBACK_MARGIN),
+)
 
 Runtime = namedtuple("Runtime", "paths store state_dir config")
 
@@ -36,6 +43,11 @@ DEFAULT_CONFIG = """\
 # Rotate when a limit group has less than this percent left.
 REMAINING_SESSION=15     # the 5-hour window
 REMAINING_WEEKLY=10      # weekly windows, incl. per-model ones
+# One account can keep its own, e.g. a reserve on one you also chat on:
+# REMAINING_WEEKLY_personal=30
+
+# Points more an account needs before going back to it is worth a swap.
+RETURN_MARGIN=10
 
 # Preference order. First account with headroom wins.
 ACCOUNTS=""
@@ -46,6 +58,8 @@ DRY_RUN=0                # 1 = log the decision, do not swap
 
 _THRESHOLD_KEYS = {"REMAINING_SESSION": ("session", 15), "REMAINING_WEEKLY": ("weekly", 10)}
 _FLAG_KEYS = (("ENABLED", True), ("DRY_RUN", False))
+# A margin past half the window would rule out going back for good.
+RETURN_MARGIN_CEILING = 50
 
 LOG = "grazr.log"
 PREVIOUS_STATUSLINE = "statusline.previous.json"
@@ -189,7 +203,7 @@ def act_on(decision, runtime, active_id, limits, enrolled=(), now=None):
         readings = {entry.id: entry.snapshot for entry in enrolled}
         readings[active_id] = limits
         line = "Every account is below your thresholds, earliest reset %s" % _earliest_reset(
-            now or datetime.now(timezone.utc), config.thresholds, readings, enrolled
+            now or datetime.now(timezone.utc), config, readings, enrolled
         )
         # Keyed on the line, so a change of window earns its own announcement.
         announced = _announce_once(state_dir, line, "grazr: every account is low", line)
@@ -214,10 +228,14 @@ def act_on(decision, runtime, active_id, limits, enrolled=(), now=None):
     note = claude.rotate(paths, store, active_id, next_id, limits)
     accounts.mark_first_reading_due(paths, next_id)
     now = now or datetime.now(timezone.utc)
-    low = core.shortfall(limits or [], now, config.thresholds)
+    per_account = _per_account(config, enrolled)
+    own = core.thresholds_of(active_id, config.thresholds, per_account)
+    low = core.shortfall(limits or [], now, own)
     if low:
-        why = ", %s %d%% < %d%%" % (low.group, low.remaining, config.thresholds[low.group])
-    elif core.expiring_sooner(limits or [], active_id, enrolled, now, config.thresholds) == next_id:
+        why = ", %s %d%% < %d%%" % (low.group, low.remaining, own[low.group])
+    elif core.expiring_sooner(
+        limits or [], active_id, enrolled, now, config.thresholds, per_account, config.return_margin
+    ) == next_id:
         why = ", its week ends sooner"
     else:
         why = ""
@@ -242,13 +260,25 @@ def _name_of(accounts, identifier):
     return {entry.id: entry.name for entry in accounts}.get(identifier, identifier)
 
 
+def _per_account(config, enrolled):
+    """The thresholds accounts set for themselves, keyed by id as core takes
+    them. config.env knows an account by the name enrolment gave it. Only a
+    name in ACCOUNTS can set any, and ACCOUNTS is what `enrolled` is loaded
+    from, so every account that sets one is found here."""
+    return {
+        entry.id: config.account_thresholds[entry.name]
+        for entry in enrolled
+        if entry.name in config.account_thresholds
+    }
+
+
 def _moved(decision, dry_run):
     """Whether a credential actually changed hands, which is the only thing
     worth repainting the panes for."""
     return not dry_run and isinstance(decision, tuple) and decision[0] == "rotate"
 
 
-def _earliest_reset(now, thresholds, readings, enrolled):
+def _earliest_reset(now, config, readings, enrolled):
     """When the first of these accounts could take over again, which one, and
     the window holding it back, as a local weekday and clock time since it ends
     up in a toast. "unknown" when no window says.
@@ -258,11 +288,14 @@ def _earliest_reset(now, thresholds, readings, enrolled):
     was, so quoting its reset promises a wait that changes nothing, and a spent
     one with no reset time keeps its account out entirely rather than let a
     sibling window speak for it. An account is free once the last of its spent
-    windows has reset, so that one speaks for it, and the first free wins."""
+    windows has reset, so that one speaks for it, and the first free wins.
+    Spent means below that account's own thresholds."""
+    per_account = _per_account(config, enrolled)
     freed = []
     for identifier, snapshot in readings.items():
         if not isinstance(snapshot, list):
             continue
+        thresholds = core.thresholds_of(identifier, config.thresholds, per_account)
         spent = [
             entry
             for entry in snapshot
@@ -368,14 +401,39 @@ def load_config(path):
     thresholds = {}
     for key, (group, default) in _THRESHOLD_KEYS.items():
         thresholds[group] = _percent(settings.pop(key, None), key, default)
+    return_margin = _percent(
+        settings.pop("RETURN_MARGIN", None), "RETURN_MARGIN", core.FALLBACK_MARGIN, RETURN_MARGIN_CEILING
+    )
     flags = [_flag(settings.pop(key, None), key, default) for key, default in _FLAG_KEYS]
     accounts = shlex.split(settings.pop("ACCOUNTS", "") or "")
     if len(set(accounts)) != len(accounts):
         raise ValueError("ACCOUNTS lists the same account twice: %s" % " ".join(accounts))
+
+    # REMAINING_WEEKLY_<name> holds one account to a threshold of its own. The
+    # name is the one in ACCOUNTS, character for character, dots and dashes
+    # included: grazr reads this file itself, never through a shell. One that
+    # is not in ACCOUNTS is refused, since a misspelt name would be a reserve
+    # that never holds.
+    account_thresholds = {}
+    for key in sorted(settings):
+        for prefix, (group, _) in _THRESHOLD_KEYS.items():
+            if not key.startswith(prefix + "_"):
+                continue
+            name = key[len(prefix) + 1:]
+            if name not in accounts:
+                raise ValueError("%s sets a threshold for %r, which is not in ACCOUNTS" % (key, name))
+            account_thresholds.setdefault(name, {})[group] = _percent(settings.pop(key), key, None)
     if settings:
         raise ValueError("Unknown setting(s): %s" % ", ".join(sorted(settings)))
 
-    return Config(thresholds=thresholds, accounts=accounts, enabled=flags[0], dry_run=flags[1])
+    return Config(
+        thresholds=thresholds,
+        accounts=accounts,
+        enabled=flags[0],
+        dry_run=flags[1],
+        account_thresholds=account_thresholds,
+        return_margin=return_margin,
+    )
 
 
 def _seed_config(path):
@@ -387,15 +445,15 @@ def _seed_config(path):
         pass
 
 
-def _percent(value, key, default):
+def _percent(value, key, default, ceiling=100):
     if value is None:
         return default
     try:
         number = int(value)
     except ValueError:
         raise ValueError("%s must be a whole percent, got %r" % (key, value))
-    if not 0 <= number <= 100:
-        raise ValueError("%s must be between 0 and 100, got %d" % (key, number))
+    if not 0 <= number <= ceiling:
+        raise ValueError("%s must be between 0 and %d, got %d" % (key, ceiling, number))
     return number
 
 
@@ -517,8 +575,11 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
             if expired:
                 _log_leftovers(state_dir, now, parked.name, expired)
                 accounts.record_snapshot(paths, parked.id, core.merged(parked.snapshot, [], now))
-    if not core.needs_rotation(limits, now, config.thresholds) and not core.expiring_sooner(
-        limits, active, enrolled, now, config.thresholds
+    per_account = _per_account(config, enrolled)
+    if not core.needs_rotation(
+        limits, now, core.thresholds_of(active, config.thresholds, per_account)
+    ) and not core.expiring_sooner(
+        limits, active, enrolled, now, config.thresholds, per_account, config.return_margin
     ):
         return 0
     if not any(entry.id == active for entry in enrolled):
@@ -657,7 +718,10 @@ def decide(runtime=None):
         if limits is None:
             return 0
         enrolled = accounts.load(paths, config.accounts)
-        decision = core.decide(limits, active, enrolled, now, config.thresholds)
+        decision = core.decide(
+            limits, active, enrolled, now, config.thresholds,
+            _per_account(config, enrolled), config.return_margin,
+        )
         # rotate refuses this too, but a raised error suits the person who just
         # pressed a key, not every message of every pane.
         if isinstance(decision, tuple):
@@ -902,18 +966,22 @@ def swap(runtime=None, target=None):
             if next_id == active:
                 return _refuse_swap("Already on %s" % _name_of(enrolled, active))
             chosen = next(entry for entry in enrolled if entry.id == next_id)
-            if core.next_account(active, [chosen], now, config.thresholds) is None:
+            if core.next_account(
+                active, [chosen], now, config.thresholds, _per_account(config, enrolled)
+            ) is None:
                 # The next reading would move off it again: two swaps for one
                 # message.
                 return _refuse_swap(
                     "%s is below your thresholds, earliest reset %s"
                     % (chosen.name, _earliest_reset(
-                        now, config.thresholds, {chosen.id: chosen.snapshot}, enrolled
+                        now, config, {chosen.id: chosen.snapshot}, enrolled
                     ))
                 )
         else:
             enrolled = accounts.load(paths, config.accounts)
-            next_id = core.next_account(active, enrolled, now, config.thresholds)
+            next_id = core.next_account(
+                active, enrolled, now, config.thresholds, _per_account(config, enrolled)
+            )
         if next_id is None:
             # The account you are on is never a swap target, so its reset says
             # nothing about when this key does something.
@@ -922,7 +990,7 @@ def swap(runtime=None, target=None):
             }
             return _refuse_swap(
                 "Nothing to swap to, earliest reset %s"
-                % _earliest_reset(now, config.thresholds, candidates, enrolled)
+                % _earliest_reset(now, config, candidates, enrolled)
             )
         decision = ("rotate", next_id)
         try:
@@ -950,15 +1018,22 @@ def status(runtime=None):
     active = claude.active_account(paths)
 
     print("config: %s" % _config_path())
-    print("thresholds: session %d%% / weekly %d%% remaining%s\n"
-          % (config.thresholds["session"], config.thresholds["weekly"],
+    margin = config.return_margin
+    print("thresholds: %s remaining%s%s\n"
+          % (_describe_thresholds(config.thresholds),
+             "" if margin == core.FALLBACK_MARGIN else "   return margin %d" % margin,
              "   DRY_RUN" if config.dry_run else ""))
 
     enrolled = accounts.load(paths, config.accounts)
+    per_account = _per_account(config, enrolled)
     for account in enrolled:
         marker = "*" if account.id == active else " "
         parked = "parked" if accounts.has_parked_credential(store, account.id) else "NO CREDENTIAL"
-        print("%s %-16s %-14s %s" % (marker, account.name, parked, _describe(account.snapshot)))
+        own = core.thresholds_of(account.id, config.thresholds, per_account)
+        print("%s %-16s %-14s %s%s" % (
+            marker, account.name, parked, _describe(account.snapshot),
+            "" if own == config.thresholds else "   own thresholds: %s" % _describe_thresholds(own),
+        ))
 
     for name in config.accounts:
         if not any(account.name == name for account in enrolled):
@@ -989,6 +1064,10 @@ def _last_decision(state_dir):
         return None
     key, notified = list(notices.items())[-1]
     return "%s%s" % (key, "" if notified else "  (toast never appeared)")
+
+
+def _describe_thresholds(thresholds):
+    return "session %d%% / weekly %d%%" % (thresholds["session"], thresholds["weekly"])
 
 
 def _describe(snapshot):

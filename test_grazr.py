@@ -379,6 +379,152 @@ class TwoWeeklyLimitsTest(unittest.TestCase):
                 )
 
 
+class OwnThresholdsTest(unittest.TestCase):
+    """An account can keep thresholds of its own, such as a reserve on one you
+    also use elsewhere. Every judgement about an account uses that account's,
+    whichever one is active: a candidate is never held to the active
+    account's thresholds, and the active one never to the global ones."""
+
+    GLOBAL = {"session": 5, "weekly": 1}
+    OWN = {"ghee22": {"session": 20, "weekly": 5}}
+
+    def decide(self, limits, active, accounts, per_account=None):
+        return decide(
+            limits, active=active, accounts=accounts, now=NOW, thresholds=self.GLOBAL,
+            per_account=self.OWN if per_account is None else per_account,
+        )
+
+    def week(self, remaining, days=5):
+        return limit(group="weekly", remaining=remaining, resets_at=NOW + timedelta(days=days))
+
+    def test_a_candidate_inside_its_own_reserve_is_not_chosen_by_the_active_accounts_threshold(self):
+        """demo is spent, and ghee22 comes first in preference order with 3%
+        of its week left. That clears the global 1% but not the 5% ghee22
+        keeps for itself, so the next account takes over instead."""
+        demo = [self.week(0)]
+        ghee22 = account("ghee22", snapshot=[limit(group="session", remaining=80), self.week(3)])
+
+        self.assertEqual(
+            self.decide(demo, "demo", [account("demo"), ghee22, account("qa")]),
+            ("rotate", "qa"),
+        )
+
+    def test_the_active_account_rotates_at_its_own_reserve(self):
+        """4% of the week clears the global 1%, but ghee22 keeps 5%."""
+        for limits in (
+            [limit(group="session", remaining=80), self.week(4)],
+            [limit(group="session", remaining=18), self.week(50)],
+        ):
+            with self.subTest(limits=[(entry.group, entry.remaining) for entry in limits]):
+                self.assertEqual(
+                    self.decide(limits, "ghee22", [account("ghee22"), account("demo")]),
+                    ("rotate", "demo"),
+                )
+
+    def test_a_candidate_is_not_held_to_the_active_accounts_reserve(self):
+        """The other way round: leaving ghee22, demo's 3% clears demo's own
+        threshold, and ghee22's 5% is not demo's business."""
+        demo = account("demo", snapshot=[limit(group="session", remaining=80), self.week(3)])
+
+        self.assertEqual(
+            self.decide([self.week(4)], "ghee22", [account("ghee22"), demo]),
+            ("rotate", "demo"),
+        )
+
+    def test_an_account_that_sets_one_threshold_keeps_the_global_other(self):
+        limits = [limit(group="session", remaining=4), self.week(50)]
+
+        self.assertEqual(
+            self.decide(
+                limits, "ghee22", [account("ghee22"), account("demo")],
+                per_account={"ghee22": {"weekly": 5}},
+            ),
+            ("rotate", "demo"),
+        )
+
+    def test_a_week_ending_sooner_is_worth_it_only_above_that_accounts_own_threshold(self):
+        """14 points is ten more than the global 1%, but not ten more than
+        the 5% ghee22 keeps, so its week is not worth two swaps."""
+        ghee22 = account("ghee22", snapshot=[self.week(14, days=2)])
+
+        self.assertEqual(self.decide([self.week(98, days=7)], "demo", [ghee22]), "stay")
+
+    def test_a_week_ending_sooner_is_not_held_to_the_active_accounts_reserve(self):
+        demo = account("demo", snapshot=[self.week(14, days=2)])
+
+        self.assertEqual(
+            self.decide([self.week(98, days=7)], "ghee22", [demo]), ("rotate", "demo")
+        )
+
+    def test_the_fallback_counts_a_reserve_as_already_spent(self):
+        """Every account is below its thresholds. ghee22 has 18% of its
+        session, eighteen points more than demo, but two short of its own
+        20%: on the global 5% scale that is 3, and qa's 4 is no better by
+        ten. So grazr stays rather than spend the reserve."""
+        ghee22 = account("ghee22", snapshot=[limit(group="session", remaining=18)])
+        qa = account("qa", snapshot=[limit(group="session", remaining=4)])
+
+        self.assertEqual(
+            self.decide([limit(group="session", remaining=0)], "demo", [account("demo"), ghee22, qa]),
+            "exhausted",
+        )
+
+    def test_without_thresholds_of_its_own_the_fallback_still_compares_what_is_left(self):
+        """Counting each window against its threshold would stay here, since
+        14 - 20 is not ten better than 2 - 15. An account that sets nothing of
+        its own is compared as before, by what it has left: 14 against 2."""
+        low = account("low", snapshot=[
+            limit(group="session", remaining=50), limit(group="weekly", remaining=14),
+        ])
+
+        self.assertEqual(
+            decide(
+                [limit(group="session", remaining=2), limit(group="weekly", remaining=40)],
+                active="work", accounts=[low], now=NOW, thresholds=THRESHOLDS, per_account={},
+            ),
+            ("rotate", "low"),
+        )
+
+
+class ReturnMarginTest(unittest.TestCase):
+    """How many points more an account needs before going to it is worth a
+    swap. Ten by default. A smaller one spends leftovers the default lets
+    expire, at the price of more swaps."""
+
+    def test_a_small_margin_goes_back_for_a_leftover_the_default_lets_expire(self):
+        """The parked week ends in six hours with the weekly threshold plus 3
+        left: worth it at a margin of 2, not at the default 10."""
+        in_use = [limit(group="weekly", remaining=60, resets_at=NOW + timedelta(days=4))]
+        parked = account("parked", snapshot=[
+            limit(group="weekly", remaining=THRESHOLDS["weekly"] + 3, resets_at=NOW + timedelta(hours=6)),
+        ])
+
+        self.assertEqual(
+            decide(in_use, "work", [parked], now=NOW, thresholds=THRESHOLDS, margin=2),
+            ("rotate", "parked"),
+        )
+        self.assertEqual(decide(in_use, "work", [parked], now=NOW, thresholds=THRESHOLDS), "stay")
+
+    def test_a_small_margin_lets_the_fallback_move_for_less(self):
+        limits = [limit(group="session", remaining=2)]
+        low = account("low", snapshot=[limit(group="session", remaining=6)])
+
+        self.assertEqual(
+            decide(limits, "work", [low], now=NOW, thresholds=THRESHOLDS, margin=2), ("rotate", "low")
+        )
+        self.assertEqual(decide(limits, "work", [low], now=NOW, thresholds=THRESHOLDS), "exhausted")
+
+    def test_a_margin_of_nought_never_swaps_two_equally_low_accounts(self):
+        """Each would be as good as the other on every message, and they
+        would trade places on every one."""
+        limits = [limit(group="session", remaining=0)]
+        spent = account("spent", snapshot=[limit(group="session", remaining=0)])
+
+        self.assertEqual(
+            decide(limits, "work", [spent], now=NOW, thresholds=THRESHOLDS, margin=0), "exhausted"
+        )
+
+
 class ServiceNameTest(unittest.TestCase):
     def test_the_live_login_has_no_directory_suffix(self):
         self.assertEqual(stores.service_name(), "Claude Code-credentials")
@@ -1794,6 +1940,86 @@ class ConfigTest(unittest.TestCase):
 
         self.assertIn("REMAINING_MONTHLY", str(raised.exception))
 
+    def test_an_account_can_set_thresholds_of_its_own(self):
+        self.write(
+            "REMAINING_SESSION=5\n"
+            "REMAINING_WEEKLY=1\n"
+            'ACCOUNTS="demo qa ghee22"\n'
+            "REMAINING_SESSION_ghee22=20\n"
+            "REMAINING_WEEKLY_ghee22=5   # kept for chat\n"
+        )
+
+        config = grazr.load_config(self.path)
+
+        self.assertEqual(config.thresholds, {"session": 5, "weekly": 1})
+        self.assertEqual(config.account_thresholds, {"ghee22": {"session": 20, "weekly": 5}})
+
+    def test_no_thresholds_of_its_own_is_none_at_all(self):
+        self.write('ACCOUNTS="work personal"\n')
+
+        self.assertEqual(grazr.load_config(self.path).account_thresholds, {})
+
+    def test_an_account_name_with_a_dot_or_a_dash_is_written_as_it_is(self):
+        self.write(
+            'ACCOUNTS="me.work side-gig"\n'
+            "REMAINING_WEEKLY_me.work=5\n"
+            "REMAINING_SESSION_side-gig=30\n"
+        )
+
+        config = grazr.load_config(self.path)
+
+        self.assertEqual(
+            config.account_thresholds, {"me.work": {"weekly": 5}, "side-gig": {"session": 30}}
+        )
+
+    def test_a_threshold_for_an_account_missing_from_accounts_is_rejected_by_name(self):
+        """A misspelt name would be a reserve that never holds."""
+        for key in ("REMAINING_WEEKLY_ghe22", "REMAINING_WEEKLY_Ghee22", "REMAINING_SESSION_"):
+            with self.subTest(key=key):
+                self.write('ACCOUNTS="demo ghee22"\n%s=5\n' % key)
+
+                with self.assertRaises(ValueError) as raised:
+                    grazr.load_config(self.path)
+
+                self.assertIn(key, str(raised.exception))
+                self.assertIn("ACCOUNTS", str(raised.exception))
+
+    def test_an_accounts_own_threshold_outside_nought_to_a_hundred_is_rejected_by_name(self):
+        for value in ("140", "-1", "five", ""):
+            with self.subTest(value=value):
+                self.write('ACCOUNTS="ghee22"\nREMAINING_WEEKLY_ghee22=%s\n' % value)
+
+                with self.assertRaises(ValueError) as raised:
+                    grazr.load_config(self.path)
+
+                self.assertIn("REMAINING_WEEKLY_ghee22", str(raised.exception))
+
+    def test_the_return_margin_is_read_and_defaults_to_ten(self):
+        self.write('ACCOUNTS="work"\n')
+        self.assertEqual(grazr.load_config(self.path).return_margin, 10)
+
+        self.write('ACCOUNTS="work"\nRETURN_MARGIN=2\n')
+        self.assertEqual(grazr.load_config(self.path).return_margin, 2)
+
+    def test_a_return_margin_outside_nought_to_fifty_is_rejected_by_name(self):
+        for value in ("51", "-1", "two", ""):
+            with self.subTest(value=value):
+                self.write('ACCOUNTS="work"\nRETURN_MARGIN=%s\n' % value)
+
+                with self.assertRaises(ValueError) as raised:
+                    grazr.load_config(self.path)
+
+                self.assertIn("RETURN_MARGIN", str(raised.exception))
+
+    def test_the_return_margin_is_one_for_every_account(self):
+        """It prices a swap, and a swap costs the same whichever account."""
+        self.write('ACCOUNTS="work"\nRETURN_MARGIN_work=2\n')
+
+        with self.assertRaises(ValueError) as raised:
+            grazr.load_config(self.path)
+
+        self.assertIn("RETURN_MARGIN_work", str(raised.exception))
+
 
 class ThresholdDefaultTest(unittest.TestCase):
     """Readings arrive with every message, so the default needs no room for a
@@ -2606,6 +2832,35 @@ class SwapTest(EnrolledPairFixture):
         self.assertEqual(self.rotations, [])
         self.assertIn("personal is below your thresholds, earliest reset %s" % clock(reset), printed)
 
+    def test_a_named_account_inside_a_reserve_of_its_own_is_refused(self):
+        """30% left clears the global 15%, but personal keeps 40% for itself."""
+        reset = (datetime.now(timezone.utc) + timedelta(hours=2)).replace(second=0, microsecond=0)
+        self.write_config('ACCOUNTS="work personal"\nREMAINING_SESSION_personal=40\n')
+        self.write_account_snapshot("uuid-personal", remaining=30, resets_at=reset)
+
+        code, printed = self.swap_to("personal")
+
+        self.assertEqual(code, 1)
+        self.assertEqual(self.rotations, [])
+        self.assertIn(
+            "personal is below your thresholds, earliest reset %s (personal, session window)"
+            % clock(reset),
+            printed,
+        )
+
+    def test_the_key_passes_over_an_account_inside_a_reserve_of_its_own(self):
+        reset = (datetime.now(timezone.utc) + timedelta(hours=2)).replace(second=0, microsecond=0)
+        self.write_config('ACCOUNTS="work personal"\nREMAINING_SESSION_personal=40\n')
+        self.write_account_snapshot("uuid-personal", remaining=30, resets_at=reset)
+
+        code, printed = self.invoke(grazr.swap)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(self.rotations, [])
+        self.assertIn(
+            "Nothing to swap to, earliest reset %s (personal, session window)" % clock(reset), printed
+        )
+
     def test_a_name_nobody_enrolled_is_refused_on_screen(self):
         code, printed = self.swap_to("nobody")
 
@@ -2659,6 +2914,17 @@ class StatuslineTest(EnrolledPairFixture):
         self.run_statusline(self.payload(used=90))
 
         self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
+
+    def test_the_active_account_rotates_at_a_threshold_of_its_own(self):
+        """30% left clears the global 15%, but work keeps 40% for itself, and
+        the log names the threshold that moved it."""
+        self.write_config('ACCOUNTS="work personal"\nREMAINING_SESSION_work=40\n')
+
+        self.run_statusline(self.payload(used=70))
+
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            self.assertIn("Rotated work -> personal, session 30% < 40%", handle.read())
 
     def test_the_swap_runs_detached_from_a_status_line_claude_may_cancel(self):
         """Claude cancels a status-line command when the next update arrives,
@@ -2722,6 +2988,18 @@ class StatuslineTest(EnrolledPairFixture):
             _, printed = self.invoke(grazr.status)
 
         self.assertIn("This login is not enrolled, so only a swap by hand moves off it", printed)
+
+    def test_the_status_screen_shows_thresholds_an_account_sets_for_itself(self):
+        """Only where they differ from the global ones, which head the screen."""
+        self.write_config('ACCOUNTS="work personal"\nREMAINING_WEEKLY_personal=5\n')
+
+        with mock.patch.object(grazr, "read_key", lambda: "q"):
+            _, printed = self.invoke(grazr.status)
+
+        rows = {line[2:].split()[0]: line for line in printed.splitlines() if line[2:].startswith(("work ", "personal "))}
+        self.assertIn("thresholds: session 15% / weekly 10% remaining", printed)
+        self.assertIn("own thresholds: session 15% / weekly 5%", rows["personal"])
+        self.assertNotIn("own thresholds", rows["work"])
 
     def test_without_a_previous_status_line_the_bar_stays_empty(self):
         _, printed = self.run_statusline(self.payload(used=90))
@@ -2796,6 +3074,39 @@ class StatuslineTest(EnrolledPairFixture):
         self.run_statusline(payload)
 
         self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
+
+    def go_back_for_a_leftover(self, config):
+        """personal's week ends in six hours with the weekly threshold plus 3
+        left; work has room and a week that ends in three days."""
+        self.write_config(config)
+        now = datetime.now(timezone.utc)
+        path = os.path.join(self.state_dir, "accounts", "uuid-personal.json")
+        with open(path) as handle:
+            stored = json.load(handle)
+        stored["snapshot"] = [{
+            "kind": "weekly_all", "scope": None, "group": "weekly", "remaining": 10 + 3,
+            "resets_at": (now + timedelta(hours=6)).isoformat(),
+        }]
+        with open(path, "w") as handle:
+            json.dump(stored, handle)
+        self.run_statusline(json.dumps({"rate_limits": {
+            "five_hour": {"used_percentage": 10, "resets_at": int((now + timedelta(hours=4)).timestamp())},
+            "seven_day": {"used_percentage": 59, "resets_at": int((now + timedelta(days=3)).timestamp())},
+        }}))
+
+    def test_a_small_return_margin_goes_back_for_a_leftover_in_its_last_day(self):
+        """The cheap check on every message has to use the margin too, or the
+        decision that does would never run."""
+        self.go_back_for_a_leftover('ACCOUNTS="work personal"\nRETURN_MARGIN=2\n')
+
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            self.assertIn("Rotated work -> personal, its week ends sooner", handle.read())
+
+    def test_the_default_return_margin_leaves_three_points_to_expire(self):
+        self.go_back_for_a_leftover('ACCOUNTS="work personal"\n')
+
+        self.assertEqual(self.rotations, [])
 
     def test_the_first_reading_after_a_swap_logs_what_the_first_turn_cost(self):
         """The drop from what the account had when parked to its first reading
