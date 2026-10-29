@@ -4,6 +4,18 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- `REMAINING_SESSION_<name>` and `REMAINING_WEEKLY_<name>` give one account
+  thresholds of its own, such as a reserve on an account you also chat on.
+  Every decision about an account uses its own, whichever account is active,
+  and `status` shows them where they differ from the global ones.
+- `RETURN_MARGIN` sets the ten points another account must be ahead before
+  going to it is worth a swap. Lower it to spend leftovers that would expire
+  at a weekly reset, at the price of more swaps.
+
 ## 0.5.4 - 2026-10-30
 
 ### Fixed

@@ -2996,7 +2996,11 @@ class StatuslineTest(EnrolledPairFixture):
         with mock.patch.object(grazr, "read_key", lambda: "q"):
             _, printed = self.invoke(grazr.status)
 
-        rows = {line[2:].split()[0]: line for line in printed.splitlines() if line[2:].startswith(("work ", "personal "))}
+        rows = {
+            line[2:].split()[0]: line
+            for line in printed.splitlines()
+            if line[2:].startswith(("work ", "personal "))
+        }
         self.assertIn("thresholds: session 15% / weekly 10% remaining", printed)
         self.assertIn("own thresholds: session 15% / weekly 5%", rows["personal"])
         self.assertNotIn("own thresholds", rows["work"])
