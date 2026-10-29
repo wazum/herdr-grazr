@@ -456,11 +456,11 @@ class OwnThresholdsTest(unittest.TestCase):
             self.decide([self.week(98, days=7)], "ghee22", [demo]), ("rotate", "demo")
         )
 
-    def test_the_fallback_counts_a_reserve_as_already_spent(self):
+    def test_the_fallback_never_moves_into_an_account_below_its_own_floor(self):
         """Every account is below its thresholds. ghee22 has 18% of its
-        session, eighteen points more than demo, but two short of its own
-        20%: on the global 5% scale that is 3, and qa's 4 is no better by
-        ten. So grazr stays rather than spend the reserve."""
+        session, eighteen points more than demo, but its own 20% is a floor,
+        and qa's 4 is not ten better than demo's 0. So grazr stays on demo
+        rather than drain the reserve."""
         ghee22 = account("ghee22", snapshot=[limit(group="session", remaining=18)])
         qa = account("qa", snapshot=[limit(group="session", remaining=4)])
 
@@ -468,6 +468,40 @@ class OwnThresholdsTest(unittest.TestCase):
             self.decide([limit(group="session", remaining=0)], "demo", [account("demo"), ghee22, qa]),
             "exhausted",
         )
+
+    def test_the_fallback_moves_off_an_account_below_its_own_floor_without_the_margin(self):
+        """demo and qa are spent, and ghee22 is down to its floor: 5% of its
+        week left against its own 6%. qa has far less, but it keeps no
+        reserve, so it is drained before ghee22 is."""
+        demo = account("demo", snapshot=[self.week(1)])
+        qa = account("qa", snapshot=[self.week(0)])
+
+        self.assertEqual(
+            decide(
+                [limit(group="session", remaining=80), self.week(5)], active="ghee22",
+                accounts=[demo, qa, account("ghee22")], now=NOW,
+                thresholds={"session": 5, "weekly": 2}, per_account={"ghee22": {"session": 6, "weekly": 6}},
+            ),
+            ("rotate", "demo"),
+        )
+
+    def test_with_only_reserves_left_the_fallback_stays(self):
+        spare = account("spare", snapshot=[self.week(4)])
+
+        self.assertEqual(
+            self.decide(
+                [self.week(4)], "ghee22", [account("ghee22"), spare],
+                per_account={"ghee22": {"weekly": 5}, "spare": {"weekly": 5}},
+            ),
+            "exhausted",
+        )
+
+    def test_a_week_ending_sooner_is_not_worth_it_while_that_account_is_inside_its_own_session_reserve(self):
+        """Its week has plenty left, but 10% of its session is inside the 20%
+        ghee22 keeps, though well above the global 5%."""
+        ghee22 = account("ghee22", snapshot=[limit(group="session", remaining=10), self.week(40, days=2)])
+
+        self.assertEqual(self.decide([self.week(98, days=7)], "demo", [ghee22]), "stay")
 
     def test_without_thresholds_of_its_own_the_fallback_still_compares_what_is_left(self):
         """Counting each window against its threshold would stay here, since
@@ -487,9 +521,9 @@ class OwnThresholdsTest(unittest.TestCase):
 
 
 class ReturnMarginTest(unittest.TestCase):
-    """How many points more an account needs before going to it is worth a
-    swap. Ten by default. A smaller one spends leftovers the default lets
-    expire, at the price of more swaps."""
+    """How many points above its threshold a parked account needs before
+    going back for its week is worth a swap. Ten by default. A smaller one
+    spends leftovers the default lets expire, at the price of more swaps."""
 
     def test_a_small_margin_goes_back_for_a_leftover_the_default_lets_expire(self):
         """The parked week ends in six hours with the weekly threshold plus 3
@@ -500,29 +534,23 @@ class ReturnMarginTest(unittest.TestCase):
         ])
 
         self.assertEqual(
-            decide(in_use, "work", [parked], now=NOW, thresholds=THRESHOLDS, margin=2),
+            decide(in_use, "work", [parked], now=NOW, thresholds=THRESHOLDS, return_margin=2),
             ("rotate", "parked"),
         )
         self.assertEqual(decide(in_use, "work", [parked], now=NOW, thresholds=THRESHOLDS), "stay")
 
-    def test_a_small_margin_lets_the_fallback_move_for_less(self):
+    def test_the_fallback_keeps_its_ten_points_whatever_the_return_margin(self):
+        """With three low accounts, a fallback that moved for two points would
+        swap every few messages."""
         limits = [limit(group="session", remaining=2)]
         low = account("low", snapshot=[limit(group="session", remaining=6)])
 
-        self.assertEqual(
-            decide(limits, "work", [low], now=NOW, thresholds=THRESHOLDS, margin=2), ("rotate", "low")
-        )
-        self.assertEqual(decide(limits, "work", [low], now=NOW, thresholds=THRESHOLDS), "exhausted")
-
-    def test_a_margin_of_nought_never_swaps_two_equally_low_accounts(self):
-        """Each would be as good as the other on every message, and they
-        would trade places on every one."""
-        limits = [limit(group="session", remaining=0)]
-        spent = account("spent", snapshot=[limit(group="session", remaining=0)])
-
-        self.assertEqual(
-            decide(limits, "work", [spent], now=NOW, thresholds=THRESHOLDS, margin=0), "exhausted"
-        )
+        for return_margin in (0, 2):
+            with self.subTest(return_margin=return_margin):
+                self.assertEqual(
+                    decide(limits, "work", [low], now=NOW, thresholds=THRESHOLDS, return_margin=return_margin),
+                    "exhausted",
+                )
 
 
 class ServiceNameTest(unittest.TestCase):

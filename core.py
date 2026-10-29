@@ -5,10 +5,13 @@ Account = namedtuple("Account", "id name snapshot")
 
 # Once every account is below the thresholds, another one must be this much
 # better off before it is worth a swap, or two low accounts would trade places
-# on every message. Going back for a week that ends sooner needs this much
-# above the threshold, or it is not worth two swaps. The default; a caller can
-# pass its own `margin`.
+# on every message.
 FALLBACK_MARGIN = 10
+
+# Going back for a week that ends sooner needs this much above the threshold,
+# or it is not worth two swaps. The default; a caller can pass its own
+# `return_margin`. It never applies to the fallback above.
+RETURN_MARGIN = 10
 
 # A weekly window with at least this much left has just reset.
 FRESH = 95
@@ -98,9 +101,9 @@ def needs_rotation(limits, now, thresholds):
     return not _has_headroom(limits, now, thresholds)
 
 
-def decide(limits, active, accounts, now, thresholds, per_account=None, margin=FALLBACK_MARGIN):
+def decide(limits, active, accounts, now, thresholds, per_account=None, return_margin=RETURN_MARGIN):
     if not needs_rotation(limits, now, thresholds_of(active, thresholds, per_account)):
-        sooner = expiring_sooner(limits, active, accounts, now, thresholds, per_account, margin)
+        sooner = expiring_sooner(limits, active, accounts, now, thresholds, per_account, return_margin)
         return ("rotate", sooner) if sooner else "stay"
     chosen = next_account(active, accounts, now, thresholds, per_account)
     if chosen:
@@ -109,33 +112,36 @@ def decide(limits, active, accounts, now, thresholds, per_account=None, margin=F
     others = [entry for entry in accounts if entry.id != active]
     if not others:
         return "unenrolled"
-
-    def worst(account_id, snapshot):
-        return _worst_window(snapshot, now, thresholds, thresholds_of(account_id, thresholds, per_account))
-
-    best = max(others, key=lambda entry: worst(entry.id, entry.snapshot))
-    ahead = worst(best.id, best.snapshot) - worst(active, limits)
-    # A margin of nought must still not swap a tie, or two equally low
-    # accounts would trade places on every message.
-    if ahead >= margin and ahead > 0:
+    # Thresholds an account sets for itself are a floor. Every other account is
+    # below its thresholds by now, so one with a floor of its own is never
+    # moved into, and an active one below its floor is left whatever the
+    # margin: an account without a reserve is drained before one with it.
+    drainable = [entry for entry in others if not _keeps_floor(entry.id, per_account)]
+    if not drainable:
+        return "exhausted"
+    best = max(drainable, key=lambda entry: _worst_window(entry.snapshot, now, thresholds))
+    if _keeps_floor(active, per_account):
+        return "rotate", best.id
+    if _worst_window(best.snapshot, now, thresholds) >= _worst_window(limits, now, thresholds) + FALLBACK_MARGIN:
         return "rotate", best.id
     return "exhausted"
 
 
-def _worst_window(limits, now, thresholds, own):
+def _keeps_floor(account_id, per_account):
+    return bool((per_account or {}).get(account_id))
+
+
+def _worst_window(limits, now, thresholds):
     """How close to the wall an account is: the least left on any live window
-    that has a threshold. What an account holds back beyond the global
-    threshold, `own` against `thresholds`, is a reserve and counts as spent,
-    so the fallback does not pick an account for the reserve it keeps. An
-    account that sets nothing of its own counts just what it has left."""
+    that has a threshold."""
     return min(
-        limit.remaining - own[limit.group] + thresholds.get(limit.group, own[limit.group])
+        limit.remaining
         for limit in limits
-        if limit.group in own and (limit.resets_at is None or limit.resets_at > now)
+        if limit.group in thresholds and (limit.resets_at is None or limit.resets_at > now)
     )
 
 
-def expiring_sooner(limits, active, accounts, now, thresholds, per_account=None, margin=FALLBACK_MARGIN):
+def expiring_sooner(limits, active, accounts, now, thresholds, per_account=None, return_margin=RETURN_MARGIN):
     """The first account fit to take over whose week ends before the active
     account's, or None. What it has left is lost at its reset unless spent
     first. So that this does not undo every session swap five hours later, it
@@ -159,7 +165,7 @@ def expiring_sooner(limits, active, accounts, now, thresholds, per_account=None,
                 continue
             if (ends - limit.resets_at).total_seconds() < SOONER_BY_SECONDS:
                 continue
-            worth_it = limit.remaining >= own.get("weekly", 0) + margin
+            worth_it = limit.remaining >= own.get("weekly", 0) + return_margin
             last_day = (limit.resets_at - now).total_seconds() <= LAST_DAY_SECONDS
             if worth_it and (fresh or last_day):
                 return candidate.id

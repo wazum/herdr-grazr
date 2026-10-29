@@ -29,12 +29,12 @@ import core
 import stores
 
 # `account_thresholds` maps an account name, as written in ACCOUNTS, to the
-# thresholds it sets for itself. `return_margin` is how many points more an
-# account must have before going to it is worth a swap.
+# thresholds it sets for itself. `return_margin` is how many points above its
+# threshold a parked account needs before going back for its week is worth a swap.
 Config = namedtuple(
     "Config",
     "thresholds accounts enabled dry_run account_thresholds return_margin",
-    defaults=({}, core.FALLBACK_MARGIN),
+    defaults=({}, core.RETURN_MARGIN),
 )
 
 Runtime = namedtuple("Runtime", "paths store state_dir config")
@@ -46,7 +46,7 @@ REMAINING_WEEKLY=10      # weekly windows, incl. per-model ones
 # One account can keep its own, e.g. a reserve on one you also chat on:
 # REMAINING_WEEKLY_personal=30
 
-# Points more an account needs before going back to it is worth a swap.
+# Points above its threshold a parked week needs before going back for it.
 RETURN_MARGIN=10
 
 # Preference order. First account with headroom wins.
@@ -402,7 +402,7 @@ def load_config(path):
     for key, (group, default) in _THRESHOLD_KEYS.items():
         thresholds[group] = _percent(settings.pop(key, None), key, default)
     return_margin = _percent(
-        settings.pop("RETURN_MARGIN", None), "RETURN_MARGIN", core.FALLBACK_MARGIN, RETURN_MARGIN_CEILING
+        settings.pop("RETURN_MARGIN", None), "RETURN_MARGIN", core.RETURN_MARGIN, RETURN_MARGIN_CEILING
     )
     flags = [_flag(settings.pop(key, None), key, default) for key, default in _FLAG_KEYS]
     accounts = shlex.split(settings.pop("ACCOUNTS", "") or "")
@@ -1021,7 +1021,7 @@ def status(runtime=None):
     margin = config.return_margin
     print("thresholds: %s remaining%s%s\n"
           % (_describe_thresholds(config.thresholds),
-             "" if margin == core.FALLBACK_MARGIN else "   return margin %d" % margin,
+             "" if margin == core.RETURN_MARGIN else "   return margin %d" % margin,
              "   DRY_RUN" if config.dry_run else ""))
 
     enrolled = accounts.load(paths, config.accounts)
