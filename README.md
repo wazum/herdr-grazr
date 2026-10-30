@@ -94,14 +94,11 @@ Enrolling also connects *grazr* to Claude's status line and keeps the one you
 have. If you later change `statusLine` in `~/.claude/settings.json` by hand,
 *grazr* sees no usage. It says so in a toast when a Claude pane starts, and the
 action `grazr: connect to Claude's status line` puts it back. The disconnect
-action restores your previous status line.
+action restores your previous status line. A plugin update needs nothing from
+you: Herdr puts each install in a new directory, and the status line follows
+when a Claude pane starts or Herdr does.
 
-Upgrading from 0.2? Run that action once, and remove `LIVE_USAGE_BELOW` from
-`config.env`:
-
-```sh
-herdr plugin action invoke wazum.grazr.install
-```
+Upgrading from 0.2? Remove `LIVE_USAGE_BELOW` from `config.env`.
 
 Then list them in the order you want them used:
 

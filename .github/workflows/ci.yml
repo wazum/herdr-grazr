@@ -99,6 +99,8 @@ jobs:
           # Sorted, because Herdr reads these by id and the order they are
           # declared in carries no meaning.
           assert sorted(event["on"] for event in manifest["events"]) == ["pane.agent_detected"]
+          # The status line follows a plugin update from here, once Herdr starts.
+          assert [hook["command"][2] for hook in manifest["startup"]] == ["tag"]
           assert sorted(pane["id"] for pane in manifest["panes"]) == ["enrol", "status"]
           assert sorted(action["id"] for action in manifest["actions"]) == [
               "install",
@@ -110,7 +112,7 @@ jobs:
           # Every command must name a file that is actually in the repo.
           import os
 
-          for entry in manifest["events"] + manifest["panes"] + manifest["actions"]:
+          for entry in manifest["events"] + manifest["panes"] + manifest["actions"] + manifest["startup"]:
               script = entry["command"][1]
               assert os.path.exists(script), "%s runs %s, which is absent" % (
                   entry.get("id", entry.get("on")),

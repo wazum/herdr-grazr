@@ -818,8 +818,9 @@ def tag(runtime=None):
     """Name the account being spent. The pane event carries a pane id and tags
     that pane, so a new pane is not blank until the next rotation. The action
     carries none and tags every pane, which is what you press after adding the
-    sidebar row. A pane start is also when to notice that the status line is no
-    longer grazr's, since without it grazr sees nothing."""
+    sidebar row. A pane start, and Herdr's own start, is also when to notice
+    that the status line is no longer grazr's, or is grazr's from a checkout
+    that an update left behind, since without it grazr sees nothing."""
     paths, _, state_dir, _ = runtime or _runtime()
     active = claude.active_account(paths)
     if active is None:
@@ -833,10 +834,18 @@ def tag(runtime=None):
         tag_pane(pane_id, named)
     else:
         tag_all(named)
-    if not claude.statusline_installed(paths.config_dir, _record_path(state_dir)):
-        line = "The status line is not grazr's, so grazr sees no usage. Run install to connect it"
-        if _announce_once(state_dir, "statusline-missing", "grazr: status line not connected", line):
-            print(line)
+    shim = _shim_command(state_dir)
+    if claude.statusline_installed(paths.config_dir, shim):
+        return 0
+    if claude.statusline_is_shim(paths.config_dir):
+        # Herdr builds every install in a new directory and removes the old
+        # one later. The shim there would run old code, then nothing.
+        claude.install_statusline(paths.config_dir, _record_path(state_dir), shim)
+        _log(state_dir, datetime.now(timezone.utc), "Status line pointed at another checkout, moved to this one")
+        return 0
+    line = "The status line is not grazr's, so grazr sees no usage. Run install to connect it"
+    if _announce_once(state_dir, "statusline-missing", "grazr: status line not connected", line):
+        print(line)
     return 0
 
 
@@ -956,7 +965,7 @@ def status(runtime=None):
             print("  %-16s not enrolled, so it is never used" % name)
 
     print("\nactive account headroom: %s" % _describe(_latest_reading(paths, active)))
-    if not claude.statusline_installed(paths.config_dir, _record_path(state_dir)):
+    if not claude.statusline_installed(paths.config_dir, _shim_command(state_dir)):
         print("  The status line is not grazr's, so grazr sees no usage. Run install to connect it")
     if active and not any(account.id == active for account in enrolled):
         # Enrolled but left out of ACCOUNTS is the likelier mistake, and calling

@@ -9,6 +9,9 @@ platforms = ["macos", "linux"]
 on = "pane.agent_detected"
 command = ["python3", "grazr.py", "tag"]
 
+[[startup]]
+command = ["python3", "grazr.py", "tag"]
+
 [[actions]]
 id = "swap"
 title = "grazr: swap to the next account now"

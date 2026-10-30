@@ -3269,6 +3269,27 @@ class ConnectTest(EnrolledPairFixture):
 
         self.assertEqual([title for title, _ in self.notices], ["grazr: status line not connected"])
 
+    def test_a_pane_start_moves_a_shim_from_another_checkout_to_this_one(self):
+        """Herdr builds every install in a new directory and removes the old
+        one later. A shim written from the old one runs old code, then nothing,
+        and only a command Herdr runs knows where the new one is."""
+        with open(os.path.join(self.claude_dir, "settings.json"), "w") as handle:
+            json.dump({"statusLine": {"type": "command", "refreshInterval": 30,
+                                      "command": "python3 /old/grazr.py statusline"}}, handle)
+        with open(os.path.join(self.state_dir, "statusline.previous.json"), "w") as handle:
+            json.dump({"previous": {"type": "command", "command": "my-bar"},
+                       "shim": "python3 /old/grazr.py statusline"}, handle)
+
+        self.invoke(grazr.tag)
+
+        command = self.settings()["statusLine"]["command"]
+        self.assertTrue(command.endswith(shlex.quote(os.path.abspath(grazr.__file__)) + " statusline"), command)
+        with open(os.path.join(self.state_dir, "statusline.previous.json")) as handle:
+            self.assertEqual(json.load(handle)["previous"]["command"], "my-bar")
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            self.assertIn("Status line pointed at another checkout, moved to this one", handle.read())
+        self.assertEqual(self.notices, [])
+
     def test_a_pane_start_is_quiet_once_connected(self):
         self.invoke(grazr.install)
 
@@ -3502,11 +3523,17 @@ class StatuslineInstallTest(unittest.TestCase):
         )
 
     def test_it_knows_whether_it_is_connected(self):
-        self.assertFalse(claude.statusline_installed(self.directory, self.record))
+        self.assertFalse(claude.statusline_installed(self.directory, "SHIM"))
         claude.install_statusline(self.directory, self.record, "SHIM")
-        self.assertTrue(claude.statusline_installed(self.directory, self.record))
+        self.assertTrue(claude.statusline_installed(self.directory, "SHIM"))
         self.write_settings({"statusLine": {"type": "command", "command": "mine"}})
-        self.assertFalse(claude.statusline_installed(self.directory, self.record))
+        self.assertFalse(claude.statusline_installed(self.directory, "SHIM"))
+
+    def test_a_shim_from_another_checkout_does_not_count_as_connected(self):
+        """Its record names that shim too, so the record cannot tell."""
+        claude.install_statusline(self.directory, self.record, "python3 /old/grazr.py statusline")
+
+        self.assertFalse(claude.statusline_installed(self.directory, "python3 /new/grazr.py statusline"))
 
     def test_a_bar_that_calls_grazr_counts_as_connected(self):
         """Every message reaches grazr through it, and the connect step would
@@ -3514,7 +3541,7 @@ class StatuslineInstallTest(unittest.TestCase):
         self.write_settings({"statusLine": {"type": "command",
                                             "command": "printf 'x'; python3 /x/grazr.py statusline | tail -c 40"}})
 
-        self.assertTrue(claude.statusline_installed(self.directory, self.record))
+        self.assertTrue(claude.statusline_installed(self.directory, "SHIM"))
 
     def test_a_settings_file_that_is_not_json_is_not_touched(self):
         with open(self.settings, "w") as handle:

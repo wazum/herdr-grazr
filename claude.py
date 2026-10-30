@@ -359,17 +359,24 @@ def uninstall_statusline(config_dir, record_path):
     return "Status line disconnected"
 
 
-def statusline_installed(config_dir, record_path):
-    """The recorded shim is in, or the user's own bar calls grazr. A shim from
-    another checkout is neither: it is replaced on connect, not passed."""
+def statusline_installed(config_dir, command):
+    """This checkout's shim is in, or the user's own bar calls grazr. A shim
+    from another checkout is neither: the pane start moves it here."""
     try:
         current = _read_settings(config_dir).get("statusLine")
     except RuntimeError:
         return False
-    if runs_grazr(_command(current)) and not _is_shim(current):
+    if _command(current) == command:
         return True
-    recorded = _read_record(record_path)
-    return recorded is not None and _command(current) == recorded["shim"]
+    return runs_grazr(_command(current)) and not _is_shim(current)
+
+
+def statusline_is_shim(config_dir):
+    """grazr's shim, from whichever checkout wrote it."""
+    try:
+        return _is_shim(_read_settings(config_dir).get("statusLine"))
+    except RuntimeError:
+        return False
 
 
 def runs_grazr(command):

@@ -4,6 +4,15 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- After a plugin update the status line kept running the old checkout, and
+  Herdr removes old checkouts later, which left grazr blind. The shim now
+  follows the update when a Claude pane starts or Herdr does, keeping your
+  previous status line. Issue 10.
+
 ## 0.5.3 - 2026-10-21
 
 ### Fixed
