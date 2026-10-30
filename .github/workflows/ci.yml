@@ -15,7 +15,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        # Ubuntu pinned: ubuntu-latest moved to a release without a Python 3.9 build.
+        os: [macos-latest, ubuntu-24.04]
         # 3.9 is the documented floor and catches syntax the README forbids
         # (no `X | None`); the newest release catches deprecations early.
         python: ["3.9", "3.13"]
