@@ -103,24 +103,38 @@ Paths = namedtuple("Paths", "config_path config_dir accounts_dir")
 STATUSLINE_WINDOWS = (("five_hour", "session", "session"), ("seven_day", "weekly_all", "weekly"))
 
 
+def _statusline_window(windows, window, kind, group):
+    """One window as the status line reports it, or None when it is missing or
+    carries no numeric used_percentage (Ultra's five-hour window is being removed,
+    so Claude sends it as null, {} or not at all)."""
+    entry = windows.get(window)
+    if not isinstance(entry, dict):
+        return None
+    used = entry.get("used_percentage")
+    if not isinstance(used, (int, float)) or isinstance(used, bool):
+        return None
+    return core.Limit(
+        kind=kind,
+        scope=None,
+        group=group,
+        remaining=max(0, 100 - used),
+        resets_at=_from_unix(entry.get("resets_at")),
+    )
+
+
 def statusline_limits(payload):
     """The limits Claude hands its status-line command after every message, for
-    the token the session is using. None when the payload has none."""
+    the token the session is using. Each window is read on its own, so one that
+    is unusable is left out and the others are kept. None when the payload has
+    no readable rate_limits object at all."""
     try:
         windows = json.loads(payload)["rate_limits"]
-        return [
-            core.Limit(
-                kind=kind,
-                scope=None,
-                group=group,
-                remaining=max(0, 100 - windows[window]["used_percentage"]),
-                resets_at=_from_unix(windows[window].get("resets_at")),
-            )
-            for window, kind, group in STATUSLINE_WINDOWS
-            if window in windows
-        ]
     except (AttributeError, KeyError, TypeError, ValueError):
         return None
+    if not isinstance(windows, dict):
+        return None
+    limits = (_statusline_window(windows, window, kind, group) for window, kind, group in STATUSLINE_WINDOWS)
+    return [limit for limit in limits if limit is not None]
 
 
 def _from_unix(seconds):
