@@ -18,6 +18,7 @@ from unittest import mock
 import accounts
 import atomic
 import claude
+import core
 import grazr
 import stores
 from core import Account, Limit, decide, next_account
@@ -2840,6 +2841,35 @@ class SwapTest(EnrolledPairFixture):
         self.assertIn("Rotated work -> spare", printed)
         self.assertEqual(self.tags, ["spare"])
 
+    def reserve_on_personal(self, minutes):
+        self.write_config('REMAINING_WEEKLY=2\nACCOUNTS="work personal"\nREMAINING_WEEKLY_personal=6\n')
+        resets = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).replace(microsecond=0)
+        with open(os.path.join(self.state_dir, "accounts", "uuid-personal.json"), "w") as f:
+            json.dump(
+                {
+                    "name": "personal",
+                    "oauthAccount": {"accountUuid": "uuid-personal"},
+                    "snapshot": [
+                        {"kind": "weekly_all", "scope": None, "group": "weekly",
+                         "remaining": 5, "resets_at": resets.isoformat()}
+                    ],
+                },
+                f,
+            )
+
+    def test_a_reserve_refuses_a_named_swap_until_the_weeks_last_hour(self):
+        self.reserve_on_personal(minutes=120)
+        code, printed = self.swap_to("personal")
+        self.assertEqual(code, 1)
+        self.assertEqual(self.rotations, [])
+        self.assertIn("below your thresholds", printed)
+
+    def test_a_reserve_is_free_to_spend_in_the_weeks_last_hour(self):
+        self.reserve_on_personal(minutes=30)
+        code, _ = self.swap_to("personal")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
+
     def test_a_named_account_can_be_given_by_id(self):
         self.enrol_spare()
 
@@ -4013,6 +4043,43 @@ class FitnessTest(unittest.TestCase):
         here = os.path.dirname(os.path.abspath(__file__))
         with open(os.path.join(here, "grazr.py")) as source:
             self.assertNotIn(', "w")', source.read())
+
+
+class ReserveEndsWithTheWeekTest(unittest.TestCase):
+    NOW = datetime(2026, 11, 2, 12, 0, tzinfo=timezone.utc)
+
+    def week(self, remaining, hours):
+        return [core.Limit("weekly_all", "all", "weekly", remaining, self.NOW + timedelta(hours=hours))]
+
+    def test_kept_until_the_last_hour(self):
+        self.assertFalse(core.reserve_ended(self.week(5, 1.01), self.NOW))
+        self.assertTrue(core.reserve_ended(self.week(5, 1), self.NOW))
+
+    def test_a_week_that_has_ended_or_no_reading_says_nothing(self):
+        self.assertFalse(core.reserve_ended(self.week(5, -1), self.NOW))
+        self.assertFalse(core.reserve_ended(None, self.NOW))
+        self.assertFalse(core.reserve_ended([], self.NOW))
+
+    def test_a_model_limit_does_not_end_it(self):
+        limits = [core.Limit("weekly_opus", "opus", "weekly", 5, self.NOW + timedelta(minutes=30))]
+        self.assertFalse(core.reserve_ended(limits, self.NOW))
+
+    def test_the_account_can_be_chosen_and_kept_in_its_last_hour(self):
+        config = SimpleNamespace(account_thresholds={"chat": {"weekly": 6, "session": 6}})
+        chat = core.Account("id-chat", "chat", self.week(5, 0.5))
+        self.assertEqual(grazr._per_account(config, [chat], self.NOW), {})
+        thresholds = {"session": 5, "weekly": 2}
+        work = core.Account("id-work", "work", self.week(50, 100))
+        self.assertEqual(
+            core.next_account("id-work", [work, chat], self.NOW, thresholds, grazr._per_account(config, [work, chat], self.NOW)),
+            "id-chat",
+        )
+        self.assertEqual(core.decide(chat.snapshot, "id-chat", [work, chat], self.NOW, thresholds, {}), "stay")
+
+    def test_it_holds_before_then(self):
+        config = SimpleNamespace(account_thresholds={"chat": {"weekly": 6}})
+        chat = core.Account("id-chat", "chat", self.week(5, 2))
+        self.assertEqual(grazr._per_account(config, [chat], self.NOW), {"id-chat": {"weekly": 6}})
 
 
 if __name__ == "__main__":

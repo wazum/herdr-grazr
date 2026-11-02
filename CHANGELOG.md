@@ -18,6 +18,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `RETURN_MARGIN` sets the ten points a parked week needs above its threshold
   before grazr goes back for it. Lower it to spend leftovers that would expire
   at a weekly reset, at the price of more swaps. The fallback keeps its ten.
+- An account's own thresholds stop applying in the last hour of its week, so
+  its reserve is spent rather than expiring unused.
 
 ## 0.5.4 - 2026-10-30
 
