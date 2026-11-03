@@ -386,7 +386,7 @@ class OwnThresholdsTest(unittest.TestCase):
     account's thresholds, and the active one never to the global ones."""
 
     GLOBAL = {"session": 5, "weekly": 1}
-    OWN = {"ghee22": {"session": 20, "weekly": 5}}
+    OWN = {"chat": {"session": 20, "weekly": 5}}
 
     def decide(self, limits, active, accounts, per_account=None):
         return decide(
@@ -398,37 +398,37 @@ class OwnThresholdsTest(unittest.TestCase):
         return limit(group="weekly", remaining=remaining, resets_at=NOW + timedelta(days=days))
 
     def test_a_candidate_inside_its_own_reserve_is_not_chosen_by_the_active_accounts_threshold(self):
-        """demo is spent, and ghee22 comes first in preference order with 3%
-        of its week left. That clears the global 1% but not the 5% ghee22
+        """work is spent, and chat comes first in preference order with 3%
+        of its week left. That clears the global 1% but not the 5% chat
         keeps for itself, so the next account takes over instead."""
-        demo = [self.week(0)]
-        ghee22 = account("ghee22", snapshot=[limit(group="session", remaining=80), self.week(3)])
+        work = [self.week(0)]
+        chat = account("chat", snapshot=[limit(group="session", remaining=80), self.week(3)])
 
         self.assertEqual(
-            self.decide(demo, "demo", [account("demo"), ghee22, account("qa")]),
-            ("rotate", "qa"),
+            self.decide(work, "work", [account("work"), chat, account("other")]),
+            ("rotate", "other"),
         )
 
     def test_the_active_account_rotates_at_its_own_reserve(self):
-        """4% of the week clears the global 1%, but ghee22 keeps 5%."""
+        """4% of the week clears the global 1%, but chat keeps 5%."""
         for limits in (
             [limit(group="session", remaining=80), self.week(4)],
             [limit(group="session", remaining=18), self.week(50)],
         ):
             with self.subTest(limits=[(entry.group, entry.remaining) for entry in limits]):
                 self.assertEqual(
-                    self.decide(limits, "ghee22", [account("ghee22"), account("demo")]),
-                    ("rotate", "demo"),
+                    self.decide(limits, "chat", [account("chat"), account("work")]),
+                    ("rotate", "work"),
                 )
 
     def test_a_candidate_is_not_held_to_the_active_accounts_reserve(self):
-        """The other way round: leaving ghee22, demo's 3% clears demo's own
-        threshold, and ghee22's 5% is not demo's business."""
-        demo = account("demo", snapshot=[limit(group="session", remaining=80), self.week(3)])
+        """The other way round: leaving chat, work's 3% clears work's own
+        threshold, and chat's 5% is not work's business."""
+        work = account("work", snapshot=[limit(group="session", remaining=80), self.week(3)])
 
         self.assertEqual(
-            self.decide([self.week(4)], "ghee22", [account("ghee22"), demo]),
-            ("rotate", "demo"),
+            self.decide([self.week(4)], "chat", [account("chat"), work]),
+            ("rotate", "work"),
         )
 
     def test_an_account_that_sets_one_threshold_keeps_the_global_other(self):
@@ -436,53 +436,53 @@ class OwnThresholdsTest(unittest.TestCase):
 
         self.assertEqual(
             self.decide(
-                limits, "ghee22", [account("ghee22"), account("demo")],
-                per_account={"ghee22": {"weekly": 5}},
+                limits, "chat", [account("chat"), account("work")],
+                per_account={"chat": {"weekly": 5}},
             ),
-            ("rotate", "demo"),
+            ("rotate", "work"),
         )
 
     def test_a_week_ending_sooner_is_worth_it_only_above_that_accounts_own_threshold(self):
         """14 points is ten more than the global 1%, but not ten more than
-        the 5% ghee22 keeps, so its week is not worth two swaps."""
-        ghee22 = account("ghee22", snapshot=[self.week(14, days=2)])
+        the 5% chat keeps, so its week is not worth two swaps."""
+        chat = account("chat", snapshot=[self.week(14, days=2)])
 
-        self.assertEqual(self.decide([self.week(98, days=7)], "demo", [ghee22]), "stay")
+        self.assertEqual(self.decide([self.week(98, days=7)], "work", [chat]), "stay")
 
     def test_a_week_ending_sooner_is_not_held_to_the_active_accounts_reserve(self):
-        demo = account("demo", snapshot=[self.week(14, days=2)])
+        work = account("work", snapshot=[self.week(14, days=2)])
 
         self.assertEqual(
-            self.decide([self.week(98, days=7)], "ghee22", [demo]), ("rotate", "demo")
+            self.decide([self.week(98, days=7)], "chat", [work]), ("rotate", "work")
         )
 
     def test_the_fallback_never_moves_into_an_account_below_its_own_floor(self):
-        """Every account is below its thresholds. ghee22 has 18% of its
-        session, eighteen points more than demo, but its own 20% is a floor,
-        and qa's 4 is not ten better than demo's 0. So grazr stays on demo
+        """Every account is below its thresholds. chat has 18% of its
+        session, eighteen points more than work, but its own 20% is a floor,
+        and other's 4 is not ten better than work's 0. So grazr stays on work
         rather than drain the reserve."""
-        ghee22 = account("ghee22", snapshot=[limit(group="session", remaining=18)])
-        qa = account("qa", snapshot=[limit(group="session", remaining=4)])
+        chat = account("chat", snapshot=[limit(group="session", remaining=18)])
+        other = account("other", snapshot=[limit(group="session", remaining=4)])
 
         self.assertEqual(
-            self.decide([limit(group="session", remaining=0)], "demo", [account("demo"), ghee22, qa]),
+            self.decide([limit(group="session", remaining=0)], "work", [account("work"), chat, other]),
             "exhausted",
         )
 
     def test_the_fallback_moves_off_an_account_below_its_own_floor_without_the_margin(self):
-        """demo and qa are spent, and ghee22 is down to its floor: 5% of its
-        week left against its own 6%. qa has far less, but it keeps no
-        reserve, so it is drained before ghee22 is."""
-        demo = account("demo", snapshot=[self.week(1)])
-        qa = account("qa", snapshot=[self.week(0)])
+        """work and other are spent, and chat is down to its floor: 5% of its
+        week left against its own 6%. other has far less, but it keeps no
+        reserve, so it is drained before chat is."""
+        work = account("work", snapshot=[self.week(1)])
+        other = account("other", snapshot=[self.week(0)])
 
         self.assertEqual(
             decide(
-                [limit(group="session", remaining=80), self.week(5)], active="ghee22",
-                accounts=[demo, qa, account("ghee22")], now=NOW,
-                thresholds={"session": 5, "weekly": 2}, per_account={"ghee22": {"session": 6, "weekly": 6}},
+                [limit(group="session", remaining=80), self.week(5)], active="chat",
+                accounts=[work, other, account("chat")], now=NOW,
+                thresholds={"session": 5, "weekly": 2}, per_account={"chat": {"session": 6, "weekly": 6}},
             ),
-            ("rotate", "demo"),
+            ("rotate", "work"),
         )
 
     def test_with_only_reserves_left_the_fallback_stays(self):
@@ -490,18 +490,18 @@ class OwnThresholdsTest(unittest.TestCase):
 
         self.assertEqual(
             self.decide(
-                [self.week(4)], "ghee22", [account("ghee22"), spare],
-                per_account={"ghee22": {"weekly": 5}, "spare": {"weekly": 5}},
+                [self.week(4)], "chat", [account("chat"), spare],
+                per_account={"chat": {"weekly": 5}, "spare": {"weekly": 5}},
             ),
             "exhausted",
         )
 
     def test_a_week_ending_sooner_is_not_worth_it_while_that_account_is_inside_its_own_session_reserve(self):
         """Its week has plenty left, but 10% of its session is inside the 20%
-        ghee22 keeps, though well above the global 5%."""
-        ghee22 = account("ghee22", snapshot=[limit(group="session", remaining=10), self.week(40, days=2)])
+        chat keeps, though well above the global 5%."""
+        chat = account("chat", snapshot=[limit(group="session", remaining=10), self.week(40, days=2)])
 
-        self.assertEqual(self.decide([self.week(98, days=7)], "demo", [ghee22]), "stay")
+        self.assertEqual(self.decide([self.week(98, days=7)], "work", [chat]), "stay")
 
     def test_without_thresholds_of_its_own_the_fallback_still_compares_what_is_left(self):
         """Counting each window against its threshold would stay here, since
@@ -1972,15 +1972,15 @@ class ConfigTest(unittest.TestCase):
         self.write(
             "REMAINING_SESSION=5\n"
             "REMAINING_WEEKLY=1\n"
-            'ACCOUNTS="demo qa ghee22"\n'
-            "REMAINING_SESSION_ghee22=20\n"
-            "REMAINING_WEEKLY_ghee22=5   # kept for chat\n"
+            'ACCOUNTS="work other chat"\n'
+            "REMAINING_SESSION_chat=20\n"
+            "REMAINING_WEEKLY_chat=5   # kept for chat\n"
         )
 
         config = grazr.load_config(self.path)
 
         self.assertEqual(config.thresholds, {"session": 5, "weekly": 1})
-        self.assertEqual(config.account_thresholds, {"ghee22": {"session": 20, "weekly": 5}})
+        self.assertEqual(config.account_thresholds, {"chat": {"session": 20, "weekly": 5}})
 
     def test_no_thresholds_of_its_own_is_none_at_all(self):
         self.write('ACCOUNTS="work personal"\n')
@@ -2002,9 +2002,9 @@ class ConfigTest(unittest.TestCase):
 
     def test_a_threshold_for_an_account_missing_from_accounts_is_rejected_by_name(self):
         """A misspelt name would be a reserve that never holds."""
-        for key in ("REMAINING_WEEKLY_ghe22", "REMAINING_WEEKLY_Ghee22", "REMAINING_SESSION_"):
+        for key in ("REMAINING_WEEKLY_cht", "REMAINING_WEEKLY_Chat", "REMAINING_SESSION_"):
             with self.subTest(key=key):
-                self.write('ACCOUNTS="demo ghee22"\n%s=5\n' % key)
+                self.write('ACCOUNTS="work chat"\n%s=5\n' % key)
 
                 with self.assertRaises(ValueError) as raised:
                     grazr.load_config(self.path)
@@ -2015,12 +2015,12 @@ class ConfigTest(unittest.TestCase):
     def test_an_accounts_own_threshold_outside_nought_to_a_hundred_is_rejected_by_name(self):
         for value in ("140", "-1", "five", ""):
             with self.subTest(value=value):
-                self.write('ACCOUNTS="ghee22"\nREMAINING_WEEKLY_ghee22=%s\n' % value)
+                self.write('ACCOUNTS="chat"\nREMAINING_WEEKLY_chat=%s\n' % value)
 
                 with self.assertRaises(ValueError) as raised:
                     grazr.load_config(self.path)
 
-                self.assertIn("REMAINING_WEEKLY_ghee22", str(raised.exception))
+                self.assertIn("REMAINING_WEEKLY_chat", str(raised.exception))
 
     def test_the_return_margin_is_read_and_defaults_to_ten(self):
         self.write('ACCOUNTS="work"\n')
