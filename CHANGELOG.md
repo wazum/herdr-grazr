@@ -4,29 +4,26 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.6.0 - 2026-11-04
 
 ### Added
 
 - `REMAINING_SESSION_<name>` and `REMAINING_WEEKLY_<name>` give one account
   thresholds of its own, such as a reserve on an account you also chat on.
-  Every decision about an account uses its own, whichever account is active.
-  They are a floor even when every account is low: the fallback never moves
-  into an account below its own, and leaves one below its own for an account
-  without a reserve. `status` shows them where they differ from the global
-  ones.
+  Each account is judged by its own, whichever one is active. One set above
+  the global value holds even when every account is low. `status` shows them
+  where they differ. Pull request 13.
 - `RETURN_MARGIN` sets the ten points a parked week needs above its threshold
-  before grazr goes back for it. Lower it to spend leftovers that would expire
-  at a weekly reset, at the price of more swaps. The fallback keeps its ten.
-- An account's own thresholds stop applying in the last hour of its week, so
-  its reserve is spent rather than expiring unused.
+  before grazr goes back for it. A lower one spends leftovers that would
+  expire at a weekly reset, at the price of more swaps. Pull request 13.
+- An account's reserve is free to spend in the last hour of its week, so it
+  no longer expires unused. Pull request 14.
 
 ### Fixed
 
-- A status line whose five-hour window is null, empty or has no usable
-  percentage, as Ultra sends once that limit is removed, no longer drops the
-  weekly reading too. Each window is read on its own, and a window that is
-  unusable is left out while the others are kept.
+- When the five-hour window is null, empty or has no usable percentage, as
+  on Ultra once that limit is gone, grazr keeps the weekly reading instead of
+  dropping both. Pull request 12.
 
 ## 0.5.4 - 2026-10-30
 
