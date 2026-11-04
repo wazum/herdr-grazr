@@ -109,6 +109,7 @@ $EDITOR "$(herdr plugin config-dir wazum.grazr)/config.env"
 ```sh
 REMAINING_SESSION=15     # rotate when the 5-hour window has less than this left
 REMAINING_WEEKLY=10      # what is left below this expires unused at the weekly reset
+RETURN_MARGIN=10         # points above its threshold a parked week needs to go back for it
 ACCOUNTS="work personal" # preference order, first with headroom wins
 ENABLED=1
 DRY_RUN=0                # 1 = log the decision, do not swap
@@ -116,24 +117,76 @@ DRY_RUN=0                # 1 = log the decision, do not swap
 
 *grazr* never moves back to an account just because it recovered. The one
 exception is a weekly reset. When the week on the account you are on has just
-reset, and another account still has at least ten points more than the weekly
-threshold in a week that ends sooner, *grazr* moves there. What that account
-has left goes first, or it expires unused at its reset. Less than ten points
-is not worth two swaps.
+reset, and another account still has at least `RETURN_MARGIN` points (ten by
+default) more than the weekly threshold in a week that ends sooner, *grazr*
+moves there. What that account has left goes first, or it expires unused at
+its reset. Less than that is not worth two swaps.
 
 The same happens in the last day of an account's week. A session swap hours
 before a weekly reset leaves that week's remainder parked, so once the parked
 account's week ends within 24 hours, its session has room again, and it has
-those ten points, *grazr* goes back for it.
+those points, *grazr* goes back for it.
 
 When every account is below the thresholds, *grazr* moves to the one with the
 most left on its lowest window, once that is ten points more than the account
 you are on. Otherwise it stays, and you keep working until the wall.
+`RETURN_MARGIN` does not change these ten points: with three low accounts, a
+smaller margin here would swap every few messages.
 
 Whatever an account has left when *grazr* moves off it stays there until that
 window resets, so a large weekly margin is a large weekly loss. Raise it only
 if you use the same account elsewhere, such as on claude.ai, and want a
-reserve for that.
+reserve for that. To keep the reserve on that account alone, give it
+thresholds of its own.
+
+### Thresholds for one account
+
+An account you also chat on, on claude.ai or in a Claude session of your own,
+can keep a reserve while the others run nearly dry. Put the account's name, as
+it appears in `ACCOUNTS`, after either threshold key:
+
+```sh
+REMAINING_SESSION=5
+REMAINING_WEEKLY=2
+ACCOUNTS="work spare chat"
+REMAINING_SESSION_chat=6   # leave 5% of chat's 5-hour window for you
+REMAINING_WEEKLY_chat=6    # and 5% of its week
+```
+
+Readings are whole percents and *grazr* rotates once a window is below its
+threshold, so a threshold of 6 moves off at 5% left and keeps that 5% for you.
+The global `REMAINING_WEEKLY=2` runs the other accounts to 99% of their week.
+
+The name goes in exactly as `ACCOUNTS` has it, case, dots and dashes included,
+as in `REMAINING_WEEKLY_me.work=6`. *grazr* reads `config.env` itself, never
+through a shell, so the key does not have to be a shell variable name. A name
+that is not in `ACCOUNTS` is refused, since a misspelt one would be a reserve
+that never holds. Set one key or both. The other comes from the global value.
+
+Each account is held to its own thresholds, whichever one you are on. *grazr*
+moves off `chat` once it is down to its reserve, never picks it while it is
+inside its reserve, and never holds `work` to `chat`'s reserve. Thresholds an
+account sets above the global ones are a floor, also when every account is low: the
+fallback above never moves into `chat` below its floor, and moves off `chat`
+below its floor to an account without a reserve, even one with less left and
+without the ten points. Only when every other account keeps a reserve of its
+own does *grazr* stay on `chat`. A swap you ask for by name refuses an account
+inside its reserve, as it does any account below its thresholds. The status
+pane shows each account's thresholds where they differ from the global ones.
+
+### The return margin
+
+`RETURN_MARGIN` is the ten points a parked week needs above its weekly
+threshold before *grazr* goes back for it, when the week on the account you
+are on has just reset or the parked one is in its last day. Lower it to spend
+leftovers that would otherwise expire at a weekly reset. With
+`RETURN_MARGIN=2`, a parked week in its last day with the weekly threshold
+plus two left is worth going back for. The fallback when every account is low
+keeps its own ten points.
+
+The price is more swaps, and each one costs a token refresh and a cold prompt
+cache on every pane. It takes 0 to 50, and it is one value for every account,
+since a swap costs the same whichever account it moves to.
 
 Start with `DRY_RUN=1` for a day. Every decision is written to `grazr.log` in
 the plugin's state directory, `~/.local/state/herdr/plugins/wazum.grazr`, with a

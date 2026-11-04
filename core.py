@@ -8,6 +8,11 @@ Account = namedtuple("Account", "id name snapshot")
 # on every message.
 FALLBACK_MARGIN = 10
 
+# Going back for a week that ends sooner needs this much above the threshold,
+# or it is not worth two swaps. The default; a caller can pass its own
+# `return_margin`. It never applies to the fallback above.
+RETURN_MARGIN = 10
+
 # A weekly window with at least this much left has just reset.
 FRESH = 95
 
@@ -84,25 +89,49 @@ def replaced(previous, current, now):
     ]
 
 
+def thresholds_of(account_id, thresholds, per_account=None):
+    """The thresholds one account is held to: the global ones, with any that
+    account sets for itself in `per_account`, which is keyed by account id.
+    Every judgement about an account goes through here with that account's
+    id, so a reserve kept on one account holds whichever account is active."""
+    return dict(thresholds, **(per_account or {}).get(account_id, {}))
+
+
 def needs_rotation(limits, now, thresholds):
     return not _has_headroom(limits, now, thresholds)
 
 
-def decide(limits, active, accounts, now, thresholds):
-    if not needs_rotation(limits, now, thresholds):
-        sooner = expiring_sooner(limits, active, accounts, now, thresholds)
+def decide(limits, active, accounts, now, thresholds, per_account=None, return_margin=RETURN_MARGIN):
+    if not needs_rotation(limits, now, thresholds_of(active, thresholds, per_account)):
+        sooner = expiring_sooner(limits, active, accounts, now, thresholds, per_account, return_margin)
         return ("rotate", sooner) if sooner else "stay"
-    chosen = next_account(active, accounts, now, thresholds)
+    chosen = next_account(active, accounts, now, thresholds, per_account)
     if chosen:
         return "rotate", chosen
     # "Every account is spent" would be a claim about accounts that do not exist.
     others = [entry for entry in accounts if entry.id != active]
     if not others:
         return "unenrolled"
-    best = max(others, key=lambda entry: _worst_window(entry.snapshot, now, thresholds))
+    # Thresholds an account sets for itself are a floor. Every other account is
+    # below its thresholds by now, so one with a floor of its own is never
+    # moved into, and an active one below its floor is left whatever the
+    # margin: an account without a reserve is drained before one with it.
+    drainable = [entry for entry in others if not _keeps_floor(entry.id, thresholds, per_account)]
+    if not drainable:
+        return "exhausted"
+    best = max(drainable, key=lambda entry: _worst_window(entry.snapshot, now, thresholds))
+    if _keeps_floor(active, thresholds, per_account):
+        return "rotate", best.id
     if _worst_window(best.snapshot, now, thresholds) >= _worst_window(limits, now, thresholds) + FALLBACK_MARGIN:
         return "rotate", best.id
     return "exhausted"
+
+
+def _keeps_floor(account_id, thresholds, per_account):
+    """Only a threshold above the global one holds something back. One below it
+    asks for the account to be drained further."""
+    own = (per_account or {}).get(account_id, {})
+    return any(value > thresholds.get(group, 0) for group, value in own.items())
 
 
 def _worst_window(limits, now, thresholds):
@@ -115,7 +144,7 @@ def _worst_window(limits, now, thresholds):
     )
 
 
-def expiring_sooner(limits, active, accounts, now, thresholds):
+def expiring_sooner(limits, active, accounts, now, thresholds, per_account=None, return_margin=RETURN_MARGIN):
     """The first account fit to take over whose week ends before the active
     account's, or None. What it has left is lost at its reset unless spent
     first. So that this does not undo every session swap five hours later, it
@@ -131,27 +160,31 @@ def expiring_sooner(limits, active, accounts, now, thresholds):
     for candidate in accounts:
         if candidate.id == active or not isinstance(candidate.snapshot, list):
             continue
-        if not _has_headroom(candidate.snapshot, now, thresholds):
+        own = thresholds_of(candidate.id, thresholds, per_account)
+        if not _has_headroom(candidate.snapshot, now, own):
             continue
         for limit in candidate.snapshot:
             if limit.group != "weekly" or not limit.resets_at or not now < limit.resets_at:
                 continue
             if (ends - limit.resets_at).total_seconds() < SOONER_BY_SECONDS:
                 continue
-            worth_it = limit.remaining >= thresholds.get("weekly", 0) + FALLBACK_MARGIN
+            worth_it = limit.remaining >= own.get("weekly", 0) + return_margin
             last_day = (limit.resets_at - now).total_seconds() <= LAST_DAY_SECONDS
             if worth_it and (fresh or last_day):
                 return candidate.id
     return None
 
 
-def next_account(active, accounts, now, thresholds):
+def next_account(active, accounts, now, thresholds, per_account=None):
     """The first account in preference order fit to take over, or None. Says
-    nothing about whether the active one needs replacing."""
+    nothing about whether the active one needs replacing. Each candidate is
+    held to its own thresholds, never to the active account's."""
     for candidate in accounts:
         if candidate.id == active:
             continue
-        if candidate.snapshot is None or _has_headroom(candidate.snapshot, now, thresholds):
+        if candidate.snapshot is None or _has_headroom(
+            candidate.snapshot, now, thresholds_of(candidate.id, thresholds, per_account)
+        ):
             return candidate.id
     return None
 

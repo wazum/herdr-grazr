@@ -6,6 +6,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Added
+
+- `REMAINING_SESSION_<name>` and `REMAINING_WEEKLY_<name>` give one account
+  thresholds of its own, such as a reserve on an account you also chat on.
+  Every decision about an account uses its own, whichever account is active.
+  They are a floor even when every account is low: the fallback never moves
+  into an account below its own, and leaves one below its own for an account
+  without a reserve. `status` shows them where they differ from the global
+  ones.
+- `RETURN_MARGIN` sets the ten points a parked week needs above its threshold
+  before grazr goes back for it. Lower it to spend leftovers that would expire
+  at a weekly reset, at the price of more swaps. The fallback keeps its ten.
+
 ### Fixed
 
 - A status line whose five-hour window is null, empty or has no usable
