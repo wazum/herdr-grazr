@@ -23,6 +23,10 @@ LAST_DAY_SECONDS = 24 * 60 * 60
 # sooner.
 SOONER_BY_SECONDS = 60 * 60
 
+# An account's own thresholds keep a reserve for its week, so they end just before
+# the week does. Whatever is still held back then would expire unused.
+RESERVE_ENDS_SECONDS = 60 * 60
+
 
 def merged(previous, current, now):
     """A window already on record keeps the lowest headroom it has shown. Idle
@@ -95,6 +99,15 @@ def thresholds_of(account_id, thresholds, per_account=None):
     Every judgement about an account goes through here with that account's
     id, so a reserve kept on one account holds whichever account is active."""
     return dict(thresholds, **(per_account or {}).get(account_id, {}))
+
+
+def reserve_ended(limits, now):
+    """Whether this account's week is in its last hour, so its reserve is free to
+    spend. An account with no reading has no known week, and keeps its reserve."""
+    for limit in limits if isinstance(limits, list) else []:
+        if limit.kind == "weekly_all" and limit.resets_at and now < limit.resets_at:
+            return (limit.resets_at - now).total_seconds() <= RESERVE_ENDS_SECONDS
+    return False
 
 
 def needs_rotation(limits, now, thresholds):

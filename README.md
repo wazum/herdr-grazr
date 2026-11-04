@@ -157,6 +157,9 @@ Readings are whole percents and *grazr* rotates once a window is below its
 threshold, so a threshold of 6 moves off at 5% left and keeps that 5% for you.
 The global `REMAINING_WEEKLY=2` runs the other accounts to 99% of their week.
 
+A reserve lasts until the last hour of that account's week, when it is free to
+spend, since it would otherwise expire unused.
+
 The name goes in exactly as `ACCOUNTS` has it, case, dots and dashes included,
 as in `REMAINING_WEEKLY_me.work=6`. *grazr* reads `config.env` itself, never
 through a shell, so the key does not have to be a shell variable name. A name

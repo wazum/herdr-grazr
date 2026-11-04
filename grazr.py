@@ -260,15 +260,17 @@ def _name_of(accounts, identifier):
     return {entry.id: entry.name for entry in accounts}.get(identifier, identifier)
 
 
-def _per_account(config, enrolled):
+def _per_account(config, enrolled, now=None):
     """The thresholds accounts set for themselves, keyed by id as core takes
     them. config.env knows an account by the name enrolment gave it. Only a
     name in ACCOUNTS can set any, and ACCOUNTS is what `enrolled` is loaded
-    from, so every account that sets one is found here."""
+    from, so every account that sets one is found here. An account in the last
+    hour of its week has none: its reserve is spendable then."""
+    now = now or datetime.now(timezone.utc)
     return {
         entry.id: config.account_thresholds[entry.name]
         for entry in enrolled
-        if entry.name in config.account_thresholds
+        if entry.name in config.account_thresholds and not core.reserve_ended(entry.snapshot, now)
     }
 
 
