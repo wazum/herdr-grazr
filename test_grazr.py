@@ -3390,6 +3390,58 @@ class StatuslinePayloadTest(unittest.TestCase):
         self.assertIsNone(claude.statusline_limits(json.dumps({"session_id": "s"})))
         self.assertIsNone(claude.statusline_limits("not json"))
 
+    def readings(self, limits):
+        return [(entry.group, entry.remaining, entry.resets_at) for entry in limits]
+
+    def test_a_null_five_hour_window_keeps_the_weekly_reading(self):
+        limits = claude.statusline_limits(self.payload(
+            five_hour=None,
+            seven_day={"used_percentage": 46, "resets_at": int(SOONER.timestamp())},
+        ))
+
+        self.assertEqual(self.readings(limits), [("weekly", 54, SOONER)])
+
+    def test_an_empty_five_hour_window_keeps_the_weekly_reading(self):
+        limits = claude.statusline_limits(self.payload(
+            five_hour={},
+            seven_day={"used_percentage": 46, "resets_at": int(SOONER.timestamp())},
+        ))
+
+        self.assertEqual(self.readings(limits), [("weekly", 54, SOONER)])
+
+    def test_a_five_hour_window_without_a_usable_percentage_keeps_the_weekly_reading(self):
+        for five_hour in ({"used_percentage": None, "resets_at": None},
+                          {"used_percentage": "27", "resets_at": None},
+                          {"used_percentage": True, "resets_at": None}):
+            with self.subTest(five_hour=five_hour):
+                limits = claude.statusline_limits(self.payload(
+                    five_hour=five_hour,
+                    seven_day={"used_percentage": 46, "resets_at": int(SOONER.timestamp())},
+                ))
+
+                self.assertEqual(self.readings(limits), [("weekly", 54, SOONER)])
+
+    def test_a_missing_five_hour_window_keeps_the_weekly_reading(self):
+        limits = claude.statusline_limits(self.payload(
+            seven_day={"used_percentage": 46, "resets_at": int(SOONER.timestamp())},
+        ))
+
+        self.assertEqual(self.readings(limits), [("weekly", 54, SOONER)])
+
+    def test_a_rate_limits_that_is_not_an_object_is_none(self):
+        self.assertIsNone(claude.statusline_limits(json.dumps({"session_id": "s", "rate_limits": None})))
+        self.assertIsNone(claude.statusline_limits(json.dumps({"session_id": "s", "rate_limits": [1]})))
+
+    def test_windows_that_no_longer_carry_used_percentage_are_none(self):
+        """A renamed field must still read as unreadable, or the warning that
+        grazr sees no usage never goes out."""
+        limits = claude.statusline_limits(self.payload(
+            five_hour={"utilization": 71, "resets_at": int(LATER.timestamp())},
+            seven_day={"utilization": 46, "resets_at": int(SOONER.timestamp())},
+        ))
+
+        self.assertIsNone(limits)
+
 
 class StatuslineInstallTest(unittest.TestCase):
     """grazr takes over Claude's status line and keeps what was there, so the

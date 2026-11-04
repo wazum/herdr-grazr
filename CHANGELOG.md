@@ -4,6 +4,15 @@ Notable changes to *grazr*, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- A status line whose five-hour window is null, empty or has no usable
+  percentage, as Ultra sends once that limit is removed, no longer drops the
+  weekly reading too. Each window is read on its own, and a window that is
+  unusable is left out while the others are kept.
+
 ## 0.5.4 - 2026-10-30
 
 ### Fixed
