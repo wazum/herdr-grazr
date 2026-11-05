@@ -13,6 +13,28 @@ FALLBACK_MARGIN = 10
 # `return_margin`. It never applies to the fallback above.
 RETURN_MARGIN = 10
 
+# Why the server refuses paid extra usage to an account. "org_spend_cap_reached"
+# on a Team or Enterprise seat is the member's own spend cap ("You've hit your
+# individual spend limit"). These belong to one member, so another account may
+# still have extra usage. Where the reason is read from is the adapter's affair.
+MEMBER_CAP_REASONS = frozenset({
+    "org_spend_cap_reached",
+    "member_level_disabled",
+    "member_zero_credit_limit",
+    "seat_tier_level_disabled",
+    "seat_tier_zero_credit_limit",
+    "group_zero_credit_limit",
+})
+# These hold for the whole organisation, so every account in it is capped too.
+ORG_CAP_REASONS = frozenset({
+    "out_of_credits",
+    "org_level_disabled",
+    "org_level_disabled_until",
+    "org_service_level_disabled",
+    "overage_not_provisioned",
+    "no_limits_configured",
+})
+
 # A weekly window with at least this much left has just reset.
 FRESH = 95
 
@@ -114,7 +136,7 @@ def needs_rotation(limits, now, thresholds):
     return not _has_headroom(limits, now, thresholds)
 
 
-def decide(limits, active, accounts, now, thresholds, per_account=None, return_margin=RETURN_MARGIN):
+def decide(limits, active, accounts, now, thresholds, per_account=None, return_margin=RETURN_MARGIN, capped=frozenset()):
     if not needs_rotation(limits, now, thresholds_of(active, thresholds, per_account)):
         sooner = expiring_sooner(limits, active, accounts, now, thresholds, per_account, return_margin)
         return ("rotate", sooner) if sooner else "stay"
@@ -137,7 +159,27 @@ def decide(limits, active, accounts, now, thresholds, per_account=None, return_m
         return "rotate", best.id
     if _worst_window(best.snapshot, now, thresholds) >= _worst_window(limits, now, thresholds) + FALLBACK_MARGIN:
         return "rotate", best.id
+    rescue = extra_usage_fallback(active, drainable, now, thresholds, capped)
+    if rescue:
+        return "rotate", rescue
     return "exhausted"
+
+
+def extra_usage_fallback(active, candidates, now, thresholds, capped):
+    """When every account is below its thresholds, the active one keeps working
+    on paid extra usage until its spend cap runs out, and then every request is
+    refused. Moving to an account whose extra usage is not known to be spent
+    keeps work going. Only fires once the active account is capped, and never
+    moves into a capped account, so two capped accounts cannot trade places. An
+    account never seen capped counts as uncapped: if it is, the next reading
+    marks it and this moves on, at most once per account. The candidate with
+    the most included usage left goes first, ties in preference order."""
+    if active not in capped:
+        return None
+    free = [entry for entry in candidates if entry.id != active and entry.id not in capped]
+    if not free:
+        return None
+    return max(free, key=lambda entry: _worst_window(entry.snapshot, now, thresholds, unknown=-1)).id
 
 
 def _keeps_floor(account_id, thresholds, per_account):
@@ -147,14 +189,20 @@ def _keeps_floor(account_id, thresholds, per_account):
     return any(value > thresholds.get(group, 0) for group, value in own.items())
 
 
-def _worst_window(limits, now, thresholds):
+def _worst_window(limits, now, thresholds, unknown=None):
     """How close to the wall an account is: the least left on any live window
-    that has a threshold."""
-    return min(
+    that has a threshold. `unknown` stands in for an account with no reading,
+    for callers that must rank one rather than fail on it."""
+    if unknown is not None and not isinstance(limits, list):
+        return unknown
+    live = [
         limit.remaining
         for limit in limits
         if limit.group in thresholds and (limit.resets_at is None or limit.resets_at > now)
-    )
+    ]
+    if not live and unknown is not None:
+        return unknown
+    return min(live)
 
 
 def expiring_sooner(limits, active, accounts, now, thresholds, per_account=None, return_margin=RETURN_MARGIN):
@@ -218,3 +266,29 @@ def shortfall(limits, now, thresholds):
 
 def _has_headroom(limits, now, thresholds):
     return shortfall(limits, now, thresholds) is None
+
+
+def cap_expires(seen_at):
+    """Spend caps are monthly. Without the reset time, which the adapter cannot
+    see, a mark is held to the start of the next calendar month in UTC, and
+    cleared sooner by a reading that shows extra usage available again."""
+    year, month = (seen_at.year + 1, 1) if seen_at.month == 12 else (seen_at.year, seen_at.month + 1)
+    return seen_at.replace(year=year, month=month, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def capped(marks, now):
+    """The account ids whose extra usage is spent, from `marks`: (id,
+    organisation, reason, seen_at) per enrolled account, reason None when
+    nothing is on record."""
+    out, orgs = set(), set()
+    for identifier, organisation, reason, seen_at in marks:
+        if reason is None or seen_at is None or now >= cap_expires(seen_at):
+            continue
+        if reason in MEMBER_CAP_REASONS:
+            out.add(identifier)
+        elif reason in ORG_CAP_REASONS:
+            out.add(identifier)
+            if organisation:
+                orgs.add(organisation)
+    out.update(identifier for identifier, organisation, _, _ in marks if organisation in orgs)
+    return frozenset(out)

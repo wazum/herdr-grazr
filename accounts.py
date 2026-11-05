@@ -95,6 +95,45 @@ def record_snapshot(paths, identifier, snapshot):
     write(paths, identifier, account)
 
 
+def record_extra_usage(paths, identifier, reason, now):
+    """Keep the last extra-usage refusal seen on this account, or forget it once
+    a reading shows none. The first sighting's time is kept while the reason
+    stands, since that is when the cap ran out."""
+    try:
+        account = read(paths, identifier)
+    except (OSError, ValueError):
+        return
+    previous = account.get("extra_usage") if isinstance(account.get("extra_usage"), dict) else None
+    if reason is None:
+        if previous is None:
+            return
+        account.pop("extra_usage", None)
+    elif previous and previous.get("reason") == reason:
+        return
+    else:
+        account["extra_usage"] = {"reason": reason, "seen_at": now.isoformat()}
+    write(paths, identifier, account)
+
+
+def extra_usage_marks(paths, enrolled):
+    """(id, organisation, reason, seen_at) for each enrolled account."""
+    marks = []
+    for entry in enrolled:
+        try:
+            stored = read(paths, entry.id)
+        except (OSError, ValueError):
+            continue
+        mark = stored.get("extra_usage") if isinstance(stored.get("extra_usage"), dict) else {}
+        organisation = (stored.get("oauthAccount") or {}).get("organizationUuid")
+        try:
+            seen_at = parse_time(mark.get("seen_at"))
+        except ValueError:
+            seen_at = None
+        reason = mark.get("reason") if isinstance(mark.get("reason"), str) else None
+        marks.append((entry.id, organisation, reason, seen_at))
+    return marks
+
+
 def mark_first_reading_due(paths, identifier, due=True):
     """Set by the swap that installs this account, cleared by the first
     reading that shows a turn on it."""
