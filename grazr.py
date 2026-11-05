@@ -239,6 +239,8 @@ def act_on(decision, runtime, active_id, limits, enrolled=(), now=None):
         why = ", its week ends sooner"
     else:
         why = ""
+    if low and active_id in core.capped(accounts.extra_usage_marks(paths, enrolled), now):
+        why += ", and its extra usage is spent"
     line = "Rotated %s -> %s%s%s" % (name_of(active_id), name_of(next_id), why, note or "")
     shown = notify(
         "grazr: now on %s" % name_of(next_id),
@@ -565,6 +567,9 @@ def statusline(runtime=None, payload=None, spawn=subprocess.run, detach=None):
             _log(state_dir, now, "First reading on %s after the swap: %s" % (name, _cost(previous, limits)))
             accounts.mark_first_reading_due(paths, active, due=False)
         accounts.record_snapshot(paths, active, limits)
+        present, reason = claude.extra_usage_reason(paths)
+        if present:
+            accounts.record_extra_usage(paths, active, reason, now)
         # A parked account is the one grazr chose to leave, so what its window
         # had left when it ran out is the number that says whether leaving was
         # right. Nobody reads for it, so its record is checked here instead,
@@ -723,6 +728,7 @@ def decide(runtime=None):
         decision = core.decide(
             limits, active, enrolled, now, config.thresholds,
             _per_account(config, enrolled), config.return_margin,
+            core.capped(accounts.extra_usage_marks(paths, enrolled), now),
         )
         # rotate refuses this too, but a raised error suits the person who just
         # pressed a key, not every message of every pane.

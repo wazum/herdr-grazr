@@ -4150,5 +4150,161 @@ class ReserveEndsWithTheWeekTest(unittest.TestCase):
         self.assertEqual(grazr._per_account(config, [chat], self.NOW), {"id-chat": {"weekly": 6}})
 
 
+
+class ExtraUsageFallbackTest(unittest.TestCase):
+    """5 Nov 2026, 14:20 UTC: every account below its thresholds, the active one
+    on paid extra usage until its individual spend cap ran out, and grazr
+    stayed because no other account was ten points better off."""
+
+    T = {"session": 15, "weekly": 10}
+    NOW = datetime(2026, 11, 5, 14, 20, tzinfo=timezone.utc)
+
+    def stephen(self, session=0):
+        return [
+            Limit("session", None, "session", session, datetime(2026, 11, 5, 15, 20, tzinfo=timezone.utc)),
+            Limit("weekly_all", None, "weekly", 65, datetime(2026, 11, 11, 21, 0, tzinfo=timezone.utc)),
+        ]
+
+    def browett(self, weekly=8):
+        return [Limit("weekly_all", None, "weekly", weekly, datetime(2026, 11, 7, 4, 0, tzinfo=timezone.utc))]
+
+    def dot(self):
+        return [Limit("weekly_all", None, "weekly", 7, datetime(2026, 11, 6, 16, 0, tzinfo=timezone.utc))]
+
+    def enrolled(self, stephen=None):
+        return [
+            account_named("Stephen.Browett", "browett", self.browett()),
+            account_named("stephen-dot", "dot", self.dot()),
+            account_named("stephen", "stephen", stephen or self.stephen()),
+        ]
+
+    def decide_on(self, active, limits, capped, now=None, accounts_=None):
+        return decide(limits, active, accounts_ or self.enrolled(), now or self.NOW, self.T, capped=frozenset(capped))
+
+    def test_without_a_cap_on_record_it_still_stays(self):
+        self.assertEqual(self.decide_on("stephen", self.stephen(), ()), "exhausted")
+
+    def test_a_capped_active_account_moves_to_one_with_extra_usage_left(self):
+        self.assertEqual(self.decide_on("stephen", self.stephen(), {"stephen"}), ("rotate", "browett"))
+
+    def test_it_does_not_move_back_into_the_capped_account(self):
+        """On Stephen.Browett, below threshold and not capped: it stays, and the
+        capped account is never chosen by the fallback."""
+        self.assertEqual(self.decide_on("browett", self.browett(), {"stephen"}), "exhausted")
+
+    def test_the_next_cap_moves_on_to_the_last_account(self):
+        self.assertEqual(self.decide_on("browett", self.browett(), {"stephen", "browett"}), ("rotate", "dot"))
+
+    def test_every_account_capped_is_exhausted(self):
+        self.assertEqual(self.decide_on("dot", self.dot(), {"stephen", "browett", "dot"}), "exhausted")
+
+    def test_included_usage_back_on_the_capped_account_takes_it_back(self):
+        """At 15:20 stephen's session resets: it has included usage again, so
+        the ordinary rule returns to it whatever its extra usage says."""
+        later = datetime(2026, 11, 5, 15, 21, tzinfo=timezone.utc)
+        fresh = [Limit("weekly_all", None, "weekly", 65, datetime(2026, 11, 11, 21, 0, tzinfo=timezone.utc))]
+        self.assertEqual(
+            self.decide_on("browett", self.browett(), {"stephen"}, now=later, accounts_=self.enrolled(fresh)),
+            ("rotate", "stephen"),
+        )
+
+    def test_an_account_never_read_is_tried(self):
+        unread = [account_named("new", "new", None), account_named("stephen", "stephen", self.stephen())]
+        self.assertEqual(self.decide_on("stephen", self.stephen(), {"stephen"}, accounts_=unread), ("rotate", "new"))
+
+    def test_a_reserve_of_its_own_is_never_raided(self):
+        decision = decide(
+            self.stephen(), "stephen", self.enrolled(), self.NOW, self.T,
+            per_account={"browett": {"weekly": 20}, "dot": {"weekly": 20}}, capped=frozenset({"stephen"}),
+        )
+        self.assertEqual(decision, "exhausted")
+
+
+class CappedTest(unittest.TestCase):
+    SEEN = datetime(2026, 11, 5, 14, 20, tzinfo=timezone.utc)
+
+    def test_the_individual_spend_limit_caps_only_that_account(self):
+        marks = [("a", "org", "org_spend_cap_reached", self.SEEN), ("b", "org", None, None)]
+        self.assertEqual(core.capped(marks, self.SEEN), {"a"})
+
+    def test_an_organisation_out_of_credits_caps_every_account_in_it(self):
+        marks = [("a", "org", "out_of_credits", self.SEEN), ("b", "org", None, None), ("c", "other", None, None)]
+        self.assertEqual(core.capped(marks, self.SEEN), {"a", "b"})
+
+    def test_a_cap_lapses_at_the_start_of_the_next_month(self):
+        marks = [("a", "org", "org_spend_cap_reached", self.SEEN)]
+        self.assertEqual(core.capped(marks, datetime(2026, 11, 30, 23, 59, tzinfo=timezone.utc)), {"a"})
+        self.assertEqual(core.capped(marks, datetime(2026, 12, 1, 0, 0, tzinfo=timezone.utc)), frozenset())
+
+    def test_december_rolls_into_january(self):
+        self.assertEqual(
+            core.cap_expires(datetime(2026, 12, 15, 9, 0, tzinfo=timezone.utc)),
+            datetime(2027, 1, 1, tzinfo=timezone.utc),
+        )
+
+    def test_a_transient_reason_caps_nothing(self):
+        self.assertEqual(core.capped([("a", "org", "fetch_error", self.SEEN)], self.SEEN), frozenset())
+
+
+class ExtraUsageStatuslineTest(EnrolledPairFixture):
+    """The cap is read from what Claude caches in .claude.json after every
+    response, marked on the active account, and used by the decision."""
+
+    def setUp(self):
+        super().setUp()
+        self.write_account_snapshot("uuid-personal", 5)
+
+    def login_with(self, reason, present=True):
+        config = {"oauthAccount": {"accountUuid": "uuid-work"}}
+        if present:
+            config["cachedExtraUsageDisabledReason"] = reason
+        with open(os.path.join(self.claude_dir, ".claude.json"), "w") as handle:
+            json.dump(config, handle)
+
+    def run_statusline(self, used=100):
+        payload = json.dumps({"rate_limits": {"five_hour": {"used_percentage": used, "resets_at": None}}})
+        return self.invoke(lambda runtime: grazr.statusline(runtime, payload, detach=lambda: grazr.decide(runtime)))
+
+    def stored(self, identifier):
+        with open(os.path.join(self.state_dir, "accounts", identifier + ".json")) as handle:
+            return json.load(handle)
+
+    def test_without_a_cap_it_stays_on_the_spent_account(self):
+        self.login_with(None)
+        self.run_statusline()
+        self.assertEqual(self.rotations, [])
+
+    def test_the_spend_cap_moves_it_off(self):
+        self.login_with("org_spend_cap_reached")
+        self.run_statusline()
+        self.assertEqual(self.rotations[0][2:4], ("uuid-work", "uuid-personal"))
+        self.assertEqual(self.stored("uuid-work")["extra_usage"]["reason"], "org_spend_cap_reached")
+        with open(os.path.join(self.state_dir, "grazr.log")) as handle:
+            self.assertIn("and its extra usage is spent", handle.read())
+
+    def test_extra_usage_available_again_clears_the_mark(self):
+        self.login_with("org_spend_cap_reached")
+        self.invoke(lambda runtime: grazr.statusline(runtime, json.dumps(
+            {"rate_limits": {"five_hour": {"used_percentage": 10, "resets_at": None}}}), detach=lambda: None))
+        self.login_with(None)
+        self.invoke(lambda runtime: grazr.statusline(runtime, json.dumps(
+            {"rate_limits": {"five_hour": {"used_percentage": 11, "resets_at": None}}}), detach=lambda: None))
+        self.assertNotIn("extra_usage", self.stored("uuid-work"))
+
+    def test_a_key_missing_after_a_swap_leaves_the_mark_alone(self):
+        self.login_with("org_spend_cap_reached")
+        self.invoke(lambda runtime: grazr.statusline(runtime, json.dumps(
+            {"rate_limits": {"five_hour": {"used_percentage": 10, "resets_at": None}}}), detach=lambda: None))
+        self.login_with(None, present=False)
+        self.invoke(lambda runtime: grazr.statusline(runtime, json.dumps(
+            {"rate_limits": {"five_hour": {"used_percentage": 11, "resets_at": None}}}), detach=lambda: None))
+        self.assertEqual(self.stored("uuid-work")["extra_usage"]["reason"], "org_spend_cap_reached")
+
+    def test_dry_run_only_logs_it(self):
+        self.write_config('ACCOUNTS="work personal"\nDRY_RUN=1\n')
+        self.login_with("org_spend_cap_reached")
+        _, printed = self.run_statusline()
+        self.assertEqual(self.rotations, [])
+
 if __name__ == "__main__":
     unittest.main()

@@ -152,6 +152,22 @@ def _from_unix(seconds):
     return datetime.fromtimestamp(round(seconds / 60) * 60, timezone.utc)
 
 
+def extra_usage_reason(paths):
+    """(present, reason) for the extra-usage state Claude cached for the live
+    login. Absent right after a swap, since rotate drops the key with the other
+    account-scoped caches; None when the last response carried no reason,
+    which means extra usage was not refused."""
+    try:
+        with open(paths.config_path) as handle:
+            config = json.load(handle)
+    except (OSError, ValueError):
+        return False, None
+    if not isinstance(config, dict) or "cachedExtraUsageDisabledReason" not in config:
+        return False, None
+    reason = config["cachedExtraUsageDisabledReason"]
+    return True, reason if isinstance(reason, str) else None
+
+
 def active_account(paths):
     try:
         with open(paths.config_path) as handle:
